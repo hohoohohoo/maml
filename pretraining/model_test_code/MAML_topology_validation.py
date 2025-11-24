@@ -2,10 +2,15 @@
 # coding: utf-8
 
 """
-ASAP7 Intra Topology Testing with MAML
+Unified MAML Testing Script
 
-This script evaluates MAML model performance on ASAP7 test datasets.
-Supports both extrapolation and interpolation testing modes.
+This script handles all MAML testing configurations:
+- Config 0: ASAP7 Intra Topology
+- Config 1: ASAP7 Topology Agnostic
+- Config 2: TSMC Intra Topology
+- Config 3: TSMC Topology Agnostic
+
+All dataset configurations are managed through test_dataset_config.py
 """
 
 import os
@@ -14,6 +19,15 @@ import torch
 import numpy as np
 import random
 import argparse
+
+# Import configuration
+from test_dataset_config import (
+    get_test_config,
+    get_train_data_paths,
+    get_test_data_paths,
+    get_maml_model_path,
+    print_available_configs
+)
 
 # Import utility functions
 from data_management_utils import (
@@ -30,29 +44,47 @@ from maml_optimized import OptimizedMAML, MAMLModel_3hidden
 
 def main():
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description='ASAP7 Intra Topology Testing with MAML (Extrapolation/Interpolation)')
+    parser = argparse.ArgumentParser(
+        description='Unified MAML Testing (Extrapolation/Interpolation)',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Available configurations:
+  0: ASAP7 Intra Topology
+  1: ASAP7 Topology Agnostic
+  2: TSMC Intra Topology
+  3: TSMC Topology Agnostic
+
+Examples:
+  python unified_maml_test.py --config 0 --cells NAND3x2 OR2x6
+  python unified_maml_test.py --config 2 --mode interpolation --data_type cell
+  python unified_maml_test.py --config 1 --save_results
+        """
+    )
+
+    parser.add_argument('--config', type=int, required=True, choices=[0, 1, 2, 3],
+                        help='Configuration ID (0-3)')
     parser.add_argument('--mode', type=str, choices=['extrapolation', 'interpolation'], default='extrapolation',
                         help='Testing mode: extrapolation or interpolation (default: extrapolation)')
-    parser.add_argument('--cells', type=str, nargs='+', default=['NAND3x2', 'OR2x6', 'NOR2xp67', 'AND2x6'],
-                        help='Cell types to test (default: NAND3x2 OR2x6 NOR2xp67 AND2x6)')
+    parser.add_argument('--cells', type=str, nargs='+', default=None,
+                        help='Cell types to test (default: config-dependent)')
     parser.add_argument('--inner', type=int, default=1,
                         help='Inner loop steps (default: 1)')
     parser.add_argument('--innerdiv', type=int, default=100,
                         help='Inner learning rate divisor (default: 100)')
-    parser.add_argument('--meta', type=int, default=64,
-                        help='Tasks per meta batch (default: 64)')
-    parser.add_argument('--data_type', type=str, default='transition',
-                        help='Data type: cell/transition (default: transition)')
-    parser.add_argument('--gpu_id', type=str, default='7',
-                        help='GPU device ID (default: 7)')
+    parser.add_argument('--meta', type=int, default=None,
+                        help='Tasks per meta batch (default: config-dependent)')
+    parser.add_argument('--data_type', type=str, default=None,
+                        help='Data type: cell/transition (default: config-dependent)')
+    parser.add_argument('--gpu_id', type=str, default=None,
+                        help='GPU device ID (default: config-dependent)')
     parser.add_argument('--model_path', type=str, default=None,
                         help='Path to pretrained model (optional)')
     parser.add_argument('--num_test_samples', type=int, default=1000000,
                         help='Number of test samples to process (default: 1000000)')
     parser.add_argument('--save_results', action='store_true',
                         help='Save prediction results to .npy files')
-    parser.add_argument('--output_prefix', type=str, default='ASAP7',
-                        help='Prefix for output files (default: ASAP7)')
+    parser.add_argument('--output_prefix', type=str, default=None,
+                        help='Prefix for output files (default: config-dependent)')
     parser.add_argument('--indices', type=int, nargs='+', default=None,
                         help='Sampling indices for support set (default: mode-dependent)')
     parser.add_argument('--total_points', type=int, default=61,
@@ -60,12 +92,33 @@ def main():
 
     args = parser.parse_args()
 
+    # Get configuration
+    try:
+        config = get_test_config(args.config)
+    except ValueError as e:
+        print(f"Error: {e}")
+        print("\n")
+        print_available_configs()
+        return 1
+
+    # Set defaults from config
+    if args.cells is None:
+        args.cells = config['default_cells']
+    if args.meta is None:
+        args.meta = config['default_meta']
+    if args.data_type is None:
+        args.data_type = config['default_data_type']
+    if args.gpu_id is None:
+        args.gpu_id = config['default_gpu']
+    if args.output_prefix is None:
+        args.output_prefix = config['tech'].upper()
+
     # Set mode-dependent default indices if not provided
     if args.indices is None:
         if args.mode == 'extrapolation':
             args.indices = [5, 30, 55]
         else:  # interpolation
-            args.indices = [15, 30, 45]
+            args.indices = [13, 30, 45]
 
     # For interpolation mode: automatically add endpoints if not present
     if args.mode == 'interpolation':
@@ -107,6 +160,8 @@ def main():
     meta = args.meta
 
     print(f"\n⚙️ Configuration:")
+    print(f"   Config ID: {args.config}")
+    print(f"   Config name: {config['name']}")
     print(f"   Mode: {args.mode}")
     print(f"   Data type: {data_type}")
     print(f"   Cells: {args.cells}")
@@ -121,27 +176,24 @@ def main():
     print(f"   → Total points: {args.total_points}")
 
     # Load training data and calculate normalization statistics
-    data_dir = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_ASAP7/intra_topology_data_upgraded"
-
-    train_data_paths = [
-        (f"{data_dir}/{data_type}_intratopology_train_input.pth",
-         f"{data_dir}/{data_type}_intratopology_train_output.pth"),
-        (f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/unified_invbuf/merged_invbuf_input_{data_type}.pth",
-         f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/unified_invbuf/merged_invbuf_output_{data_type}.pth")
-    ]
-
+    print("\n📊 Loading TRAINING dataset for normalization statistics...")
+    train_data_paths = get_train_data_paths(args.config, data_type)
     norm_stats = load_and_normalize_data(train_data_paths)
 
     # Load MAML model
     print("\n🤖 Loading MAML model...")
 
-    # Auto-detect model path if not provided
-    if args.model_path is None:
-        model_path = f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/checkpoints/taskdivide_all_checkpoints/{data_type}_innerdiv{innerdiv}_meta{meta}_intratopology_519traintask_full1DMAML_weights_3hidden_(40)_300000_inner{inner}_upgraded.pth"
-    else:
-        model_path = args.model_path
+    # Get model path from config
+    model_path = get_maml_model_path(
+        args.config,
+        data_type=data_type,
+        innerdiv=innerdiv,
+        meta=meta,
+        inner=inner,
+        custom_path=args.model_path
+    )
 
-    input_features = 9  # ASAP7 has 9 features
+    input_features = 9  # Both ASAP7 and TSMC have 9 features
     maml_model = OptimizedMAML(
         model=MAMLModel_3hidden(in_features=input_features, layer_length=40),
         dataset_in=None,
@@ -157,7 +209,7 @@ def main():
     else:
         print(f"⚠️ Model file not found: {model_path}")
         print("Please update the model path or ensure the model has been trained")
-        return
+        return 1
 
     # Random sampling setup (using command line arguments)
     K = args.k
@@ -165,8 +217,6 @@ def main():
     middle_idx = len(indices) // 2  # Calculate middle index for move parameter
 
     results_dict = {}
-    all_predictions_global = []
-    all_actuals_global = []
 
     # Process each cell type
     for cell in args.cells:
@@ -178,13 +228,18 @@ def main():
         all_predictions_global = []
         all_actuals_global = []
 
-        # Load test dataset
+        # Load test dataset from config
         print("\n📊 Loading TEST dataset...")
-        test_input_path = f"{data_dir}/{cell}/{data_type}_{cell}_test_input.pth"
-        test_output_path = f"{data_dir}/{cell}/{data_type}_{cell}_test_output.pth"
+        test_input_path, test_output_path = get_test_data_paths(args.config, cell, data_type)
 
-        test_data_input = torch.load(test_input_path)
-        test_data_output = torch.load(test_output_path)
+        try:
+            test_data_input = torch.load(test_input_path)
+            test_data_output = torch.load(test_output_path)
+        except FileNotFoundError as e:
+            print(f"⚠️ Test data not found for cell {cell}: {e}")
+            print(f"   Input:  {test_input_path}")
+            print(f"   Output: {test_output_path}")
+            continue
 
         # Add dimension to output if needed
         if len(test_data_output.shape) == 2:
@@ -269,8 +324,9 @@ def main():
                     y_max = y_norm[:,0].max()
                     y_min = y_norm[:,0].min()
 
-                    # Get model predictions for scaling
-                    predictions = maml_model.model.model(test_data_input[randomtask])
+                    # Get model predictions for scaling (using parameterized boundaries)
+                    predictions = maml_model.model.model(test_data_input[randomtask][args.left_bound:args.right_bound])
+
                     min_val = predictions.min().item()
                     max_val = predictions.max().item()
 
@@ -362,8 +418,11 @@ def main():
 
         # Save results for this cell if requested
         if args.save_results:
-            pred_filename = f"data_result_npy_directory/ASAP7_intra_topology_{cell}_{data_type}_{args.mode}_MAML_innerdiv{innerdiv}_meta{meta}_pred.npy"
-            act_filename = f"data_result_npy_directory/ASAP7_intra_topology_{cell}_{data_type}_{args.mode}_MAML_innerdiv{innerdiv}_meta{meta}_act.npy"
+            pred_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{data_type}_{args.mode}_MAML_innerdiv{innerdiv}_meta{meta}_pred.npy"
+            act_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{data_type}_{args.mode}_MAML_innerdiv{innerdiv}_meta{meta}_act.npy"
+
+            # Create directory if it doesn't exist
+            os.makedirs("data_result_npy_directory", exist_ok=True)
 
             np.save(pred_filename, all_predictions_global)
             np.save(act_filename, all_actuals_global)
@@ -386,6 +445,8 @@ def main():
         for arr in value:
             print(f"  {np.array(arr)}")
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -5,6 +5,34 @@ from concurrent.futures import ThreadPoolExecutor
 from collections import OrderedDict
 import time
 
+
+class MAMLModel_2hidden(nn.Module):
+    def __init__(self,in_features,layer_length):
+        super(MAMLModel_2hidden, self).__init__()
+        self.in_features = in_features
+        self.model = nn.Sequential(OrderedDict([
+            ('l1', nn.Linear(in_features,layer_length)),
+            ('relu1', nn.ReLU()),
+            ('l2', nn.Linear(layer_length,layer_length)),
+            ('relu2', nn.ReLU()),
+            ('l3', nn.Linear(layer_length,1))
+        ]))
+        
+    def forward(self, x):
+        return self.model(x)
+    
+    def parameterised(self, x, weights):
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # like forward, but uses ``weights`` instead of ``model.parameters()``
+        # it'd be nice if this could be generated automatically for any nn.Module...
+        weights = [w.to(self.device) for w in weights]
+        x = nn.functional.linear(x, weights[0], weights[1])
+        x = nn.functional.relu(x)
+        x = nn.functional.linear(x, weights[2], weights[3])
+        x = nn.functional.relu(x)
+        x = nn.functional.linear(x, weights[4], weights[5])
+        return x
+
 class MAMLModel_3hidden(nn.Module):
     def __init__(self, in_features, layer_length):
         super(MAMLModel_3hidden, self).__init__()
@@ -65,33 +93,6 @@ class MAMLModel_4hidden(nn.Module):
         x = nn.functional.linear(x, weights[6], weights[7])
         x = nn.functional.relu(x)
         x = nn.functional.linear(x, weights[8], weights[9])
-        return x
-
-class MAMLModel_2hidden(nn.Module):
-    def __init__(self,in_features,layer_length):
-        super(MAMLModel_2hidden, self).__init__()
-        self.in_features = in_features
-        self.model = nn.Sequential(OrderedDict([
-            ('l1', nn.Linear(in_features,layer_length)),
-            ('relu1', nn.ReLU()),
-            ('l2', nn.Linear(layer_length,layer_length)),
-            ('relu2', nn.ReLU()),
-            ('l3', nn.Linear(layer_length,1))
-        ]))
-        
-    def forward(self, x):
-        return self.model(x)
-    
-    def parameterised(self, x, weights):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # like forward, but uses ``weights`` instead of ``model.parameters()``
-        # it'd be nice if this could be generated automatically for any nn.Module...
-        weights = [w.to(self.device) for w in weights]
-        x = nn.functional.linear(x, weights[0], weights[1])
-        x = nn.functional.relu(x)
-        x = nn.functional.linear(x, weights[2], weights[3])
-        x = nn.functional.relu(x)
-        x = nn.functional.linear(x, weights[4], weights[5])
         return x
 
 class OptimizedMAML():
