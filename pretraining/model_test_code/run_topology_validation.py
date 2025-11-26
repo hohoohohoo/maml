@@ -14,7 +14,7 @@ import subprocess
 import argparse
 
 # Import configuration to get default values
-from test_dataset_config import get_test_config, print_available_configs
+from utils.test_dataset_config import get_test_config, print_available_configs
 
 def print_banner():
     """Print welcome banner"""

@@ -21,7 +21,7 @@ import random
 import argparse
 
 # Import configuration
-from test_dataset_config import (
+from utils.test_dataset_config import (
     get_test_config,
     get_train_data_paths,
     get_test_data_paths,
@@ -30,12 +30,12 @@ from test_dataset_config import (
 )
 
 # Import utility functions
-from data_management_utils import (
+from utils.data_management_utils import (
     analyze_continuity,
     load_and_normalize_data,
     apply_normalization
 )
-from mlp_functions import evaluate_model_performance_mlp
+from utils.mlp_functions import evaluate_model_performance_mlp
 
 # MLP import
 sys.path.append('../../model_code/')
@@ -275,7 +275,8 @@ Examples:
         total_r_mae = []
         total_in_mae = []
         total_mae = []
-
+        print("parameter check")
+        print(f"K:{K},middle:{middle_idx},left_value:{args.left_bound},right_value:{args.right_bound}")
         for i, randomtask in enumerate(test_indices):
             # Skip discontinuous tasks
             if randomtask in discontinuous_task_ids:

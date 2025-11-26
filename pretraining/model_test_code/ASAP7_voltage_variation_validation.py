@@ -17,11 +17,11 @@ import random
 import argparse
 
 # Import utility functions
-from data_management_utils import (
+from utils.data_management_utils import (
     analyze_continuity
 )
-from mlp_functions import evaluate_model_performance_mlp
-from maml_functions import evaluate_model_performance_maml
+from utils.mlp_functions import evaluate_model_performance_mlp
+from utils.maml_functions import evaluate_model_performance_maml
 
 # Model imports
 sys.path.append('../../model_code/')
@@ -90,6 +90,7 @@ def main():
         print(f"\n🔧 Interpolation mode: Added endpoints to indices → {args.indices}")
 
     # Calculate K, left_bound, right_bound from indices
+
     args.k = len(args.indices)
     args.left_bound = min(args.indices)
     args.right_bound = max(args.indices) + 1
@@ -132,13 +133,13 @@ def main():
 
     # Load test data
     print("\n📊 Loading test data...")
-    test_data_input = torch.load(f"../../dataset_all/dataset_ASAP7_dim5/dataset_test5(dim5)_{corner}/taskdivide_{cell_type}/testdatainput/{data_type}_test_input.pth")
-    test_data_output = torch.load(f"../../dataset_all/dataset_ASAP7_dim5/dataset_test5(dim5)_{corner}/taskdivide_{cell_type}/testdataoutput/{data_type}_test_output.pth")
+    test_data_input = torch.load(f"../../dataset_all/dataset_ASAP7_dim5/taskdivide_{cell_type.lower()}_{corner.lower()}/testdatainput/{data_type}_test_input.pth")
+    test_data_output = torch.load(f"../../dataset_all/dataset_ASAP7_dim5/taskdivide_{cell_type.lower()}_{corner.lower()}/testdataoutput/{data_type}_test_output.pth")
 
     # Determine model path based on framework
     if args.model_path is None:
         if model_framework == 'mlp':
-            model_path = f"../model_pretraining_code/MLP_pretrained_model/pretrained_asap7_{cell_type}_{data_type}_{corner}_test5_{model_type}_{args.num_iterations}.pth"
+            model_path = f"../../pretrained_models/MLP_pretrained_model/pretrained_asap7_{cell_type}_{data_type}_{corner}_test5_{model_type}_{args.num_iterations}.pth"
         else:  # maml
             model_path = f"../../pretrained_models/taskdivide_all/{data_type}_innerdiv{args.innerdiv}_meta{args.meta}_full1DMAML_weights_3hidden_({args.layer_length})_{args.num_iterations}_{cell_type.upper()}_{corner}_test5(dim5)_inner{args.inner_step}_fixed.pth"
     else:

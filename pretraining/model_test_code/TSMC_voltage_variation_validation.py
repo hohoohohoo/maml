@@ -17,11 +17,11 @@ import random
 import argparse
 
 # Import utility functions
-from data_management_utils import (
+from utils.data_management_utils import (
     analyze_continuity
 )
-from mlp_functions import evaluate_model_performance_mlp
-from maml_functions import evaluate_model_performance_maml
+from utils.mlp_functions import evaluate_model_performance_mlp
+from utils.maml_functions import evaluate_model_performance_maml
 
 # Model imports
 sys.path.append('../../model_code/')
@@ -144,7 +144,7 @@ def main():
 
         # Determine model path based on framework
         if model_framework == 'mlp':
-            model_path = f"../model_pretraining_code/MLP_pretrained_model/pretrained_tsmc_{corner.upper()}_{temp}_test5_{data_type}_{model_type}_{args.num_iterations}.pth"
+            model_path = f"../../pretrained_models/MLP_pretrained_model/pretrained_tsmc_{corner.upper()}_{temp}_test5_{data_type}_{model_type}_{args.num_iterations}.pth"
         else:  # maml
             model_path = f"../../pretrained_models/taskdivide_all/{data_type}_innerdiv{args.innerdiv}_meta{args.meta}_full1DMAML_weights_3hidden_({args.layer_length})_{args.num_iterations}_TSMC_{corner.upper()}_{temp}_test5(dim5)_inner{args.inner_step}.pth"
 
