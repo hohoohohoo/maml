@@ -1,0 +1,81 @@
+# Python
+__pycache__/
+#*.py[cod]
+#*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+
+# Data files (uncomment if you want to exclude large data files)
+# *.pth
+# *.h5
+# *.hdf5
+# *.npy
+# *.npz
+
+# Logs
+logs/
+*.log
+
+# Environment variables
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# Checkpoints (uncomment if you want to exclude checkpoints)
+# models/checkpoints/
+
+# Large model weights (uncomment if you want to exclude large models)
+# models/weights/*.pth
+
+# Validation test results and checkpoints
+pretraining/model_test_code/check_point/
+pretraining/model_test_code/data_result_npy_directory/ 
