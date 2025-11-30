@@ -2,9 +2,9 @@
   "experiment_name": "maml_layer_sweep",
   "description": "Sweep over layer lengths and inner loop configurations",
   "base_config": {
-    "dataset_config": 3,
+    "dataset_config": 1,
     "data_type": "cell",
-    "gpu": "0",
+    "gpu": "3",
     "num_iterations": 300000,
     "inner":1,
     "layer_length":40
