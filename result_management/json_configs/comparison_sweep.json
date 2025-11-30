@@ -1,0 +1,16 @@
+{
+  "experiment_name": "adam_maml_comparison_sweep",
+  "description": "Compare Adam and MAML across multiple configurations",
+  "base_config": {
+    "num_iterations": 300000,
+    "group_size": 61,
+    "save": true,
+    "metric": "SMAPE"
+  },
+  "sweep_params": {
+    "pdk": ["TSMC"],
+    "topology": ["topology_agnostic", "intra_topology"],
+    "variation_type": ["cell", "transition"],
+    "task": ["extrapolation", "interpolation"]
+  }
+}
