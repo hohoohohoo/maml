@@ -1,0 +1,14 @@
+{
+  "experiment_name": "mlp_model_sweep",
+  "description": "MLP model type and learning rate sweep",
+  "base_config": {
+    "data_type": "cell",
+    "gpu_id": "0",
+    "num_iterations": 300000,
+    "learning_rate":0.0001,
+    "model_type": "mlp"
+  },
+  "sweep_params": {
+    "dataset_config" : [0,1,2,3]
+  }
+}
