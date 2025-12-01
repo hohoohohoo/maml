@@ -2,7 +2,7 @@
   "experiment_name": "mlp_model_sweep",
   "description": "MLP model type and learning rate sweep",
   "base_config": {
-    "data_type": "cell",
+    "data_type": "transition",
     "gpu_id": "0",
     "num_iterations": 300000,
     "learning_rate":0.0001,
