@@ -1,0 +1,20 @@
+{
+  "experiment_name": "maml_topology_validation_sweep",
+  "description": "MAML topology validation parameter sweep",
+  "base_config": {
+    "inner": 1,
+    "innerdiv": 100,
+    "meta": 32,
+    "num_iterations": 300000,
+    "gpu_id": "0",
+    "num_test_samples": 1000000,
+    "save_results": true,
+    "indices": null,
+    "total_points": 61
+  },
+  "sweep_params": {
+    "config": [0, 1, 2, 3],
+    "mode": ["extrapolation", "interpolation"],
+    "data_type": ["cell", "transition"]
+  }
+}
