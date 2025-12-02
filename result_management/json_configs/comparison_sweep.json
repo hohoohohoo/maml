@@ -9,8 +9,10 @@
   },
   "sweep_params": {
     "pdk": ["ASAP7"],
-    "topology": ["topology_agnostic", "intra_topology"],
-    "variation_type": ["cell", "transition"],
-    "task": ["extrapolation", "interpolation"]
+    "topology": ["intra_topology"],
+    "variation_type": ["cell"],
+    "task": ["extrapolation"],
+    "innerdiv": [50],
+    "meta": [32]
   }
 }
