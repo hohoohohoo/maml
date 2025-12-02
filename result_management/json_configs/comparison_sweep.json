@@ -5,14 +5,14 @@
     "num_iterations": 300000,
     "group_size": 61,
     "save": true,
-    "metric": "SMAPE"
+    "metric": "SMAPE",
+    "innerdiv": [50, 100],
+    "meta": [32]
   },
   "sweep_params": {
     "pdk": ["ASAP7"],
     "topology": ["intra_topology"],
     "variation_type": ["cell"],
-    "task": ["extrapolation"],
-    "innerdiv": [50 , 100],
-    "meta": [32]
+    "task": ["extrapolation"]
   }
 }
