@@ -5,12 +5,13 @@
     "config": 0,
     "num_iterations": 300000,
     "num_test_samples": 1000000,
-    "gpu_id":"2",
+    "gpu_id":"3",
     "save_results": true,
     "total_points": 61,
     "inner":1
   },
   "sweep_params": {
+    "cells":["HAxp5","XNOR2x1","XNOR2xp5"],
     "data_type":["transition"],
     "mode":["interpolation"],
     "innerdiv": [100],
