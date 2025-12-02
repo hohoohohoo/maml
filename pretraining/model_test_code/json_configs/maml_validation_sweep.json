@@ -11,9 +11,9 @@
     "inner":1
   },
   "sweep_params": {
-    "data_type":["cell","transition"],
-    "mode":["extrapolation","interpolation"],
-    "innerdiv": [50, 5],
-    "meta":[16,32,64]
+    "data_type":["transition"],
+    "mode":["interpolation"],
+    "innerdiv": [100],
+    "meta":[32]
   }
 }
