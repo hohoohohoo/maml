@@ -8,7 +8,7 @@
     "metric": "SMAPE"
   },
   "sweep_params": {
-    "pdk": ["TSMC"],
+    "pdk": ["ASAP7"],
     "topology": ["topology_agnostic", "intra_topology"],
     "variation_type": ["cell", "transition"],
     "task": ["extrapolation", "interpolation"]
