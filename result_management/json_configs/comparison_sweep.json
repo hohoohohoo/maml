@@ -12,7 +12,7 @@
     "topology": ["intra_topology"],
     "variation_type": ["cell"],
     "task": ["extrapolation"],
-    "innerdiv": [50],
+    "innerdiv": [50 , 100],
     "meta": [32]
   }
 }
