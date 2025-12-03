@@ -2,8 +2,8 @@
   "experiment_name": "maml_validation_sweep",
   "description": "MAML validation with parameter sweep",
   "base_config": {
-    "config": 0,
-    "num_iterations": 150000,
+    "config": 1,
+    "num_iterations": 300000,
     "num_test_samples": 1000000,
     "gpu_id":"4",
     "save_results": true,
@@ -11,9 +11,10 @@
     "inner":1
   },
   "sweep_params": {
-    "data_type":["cell"],
-    "mode":["extrapolation"],
-    "innerdiv": [100],
-    "meta":[32]
+    "data_type":["transition"],
+    "mode":["interpolation"],
+    "innerdiv": [50,100],
+    "meta":[32],
+    "cells":["FAx1"]
   }
 }
