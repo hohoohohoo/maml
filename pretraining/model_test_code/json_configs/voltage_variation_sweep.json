@@ -26,19 +26,16 @@
     "maml": {
       "layer_length": 40,
       "innerdiv": 100,
-      "num_iterations": 300000,
       "asap7": {
         "inner_step": 1,
-        "meta": 32
+        "meta": 32,
+        "num_iterations" : 100000
       },
       "tsmc": {
         "inner_step": 1,
-        "meta": 32
+        "meta": 32,
+        "num_iterations": 30000
       }
-    },
-    "mlp": {
-      "model_type": "aadam",
-      "num_iterations": 300000
     }
   }
 }
