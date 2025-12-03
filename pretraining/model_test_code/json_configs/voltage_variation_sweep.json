@@ -15,7 +15,7 @@
   "pdk_specific": {
     "asap7": {
       "corner": ["FF", "SS", "TT"],
-      "cell_type": ["lvt", "rvt"]
+      "cell_type": ["lvt", "rvt","slvt","sram"]
     },
     "tsmc": {
       "corner": ["ff", "ss", "tt"],
