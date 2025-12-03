@@ -11,8 +11,8 @@
   },
   "sweep_params": {
     "pdk": ["TSMC"],
-    "topology": ["intra_topology"],
-    "variation_type": ["transition"],
-    "task": ["interpolation"]
+    "topology": ["intra_topology","topology_agnostic"],
+    "variation_type": ["transition","cell"],
+    "task": ["interpolation","extrapolation"]
   }
 }
