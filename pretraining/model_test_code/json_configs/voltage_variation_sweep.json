@@ -3,7 +3,7 @@
   "description": "Voltage variation validation for ASAP7 and TSMC across multiple configurations",
   "base_config": {
     "mode": "interpolation",
-    "gpu_id": "6",
+    "gpu_id": "7",
     "num_test_samples": 100000,
     "save_results": true,
     "model_framework": "maml"
