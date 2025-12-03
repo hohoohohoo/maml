@@ -3,7 +3,7 @@
   "description": "Voltage variation validation for MLP models (ASAP7 and TSMC)",
   "base_config": {
     "mode": "interpolation",
-    "gpu_id": "5",
+    "gpu_id": "6",
     "save_results": true,
     "model_framework": "mlp"
   },
