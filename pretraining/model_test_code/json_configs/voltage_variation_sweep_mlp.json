@@ -30,5 +30,6 @@
       "tsmc": {
         "num_iterations": 30000
       }
+   }
   }
 }
