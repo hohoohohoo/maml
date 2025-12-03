@@ -2,7 +2,7 @@
   "experiment_name": "mlp_validation_sweep",
   "description": "MLP validation with parameter sweep",
   "base_config": {
-    "config": 0,
+    "config": 2,
     "mode": "interpolation",
     "num_iterations": 300000,
     "num_test_samples": 1000000,
@@ -11,6 +11,6 @@
     "model_type" : "aadam"
   },
   "sweep_params": {
-    "data_type" : ["transition","cell"]
+    "data_type" : ["transition"]
   }
 }
