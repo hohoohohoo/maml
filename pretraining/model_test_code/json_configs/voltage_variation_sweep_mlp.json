@@ -1,0 +1,34 @@
+{
+  "experiment_name": "voltage_variation_mlp_sweep",
+  "description": "Voltage variation validation for MLP models (ASAP7 and TSMC)",
+  "base_config": {
+    "mode": "interpolation",
+    "gpu_id": "5",
+    "save_results": true,
+    "model_framework": "mlp"
+  },
+  "sweep_params": {
+    "pdk": ["asap7", "tsmc"],
+    "data_type":["transition","cell"]
+  },
+  "pdk_specific": {
+    "asap7": {
+      "corner": ["FF", "SS", "TT"],
+      "cell_type": ["lvt", "rvt","slvt","sram"]
+    },
+    "tsmc": {
+      "corner": ["ff", "ss", "tt"],
+      "temperatures": [["0", "25", "50", "75", "100"]]
+    }
+  },
+  "model_params": {
+    "mlp": {
+      "model_type": "aadam",
+      "asap7": {
+        "num_iterations": 100000
+      },
+      "tsmc": {
+        "num_iterations": 30000
+      }
+  }
+}
