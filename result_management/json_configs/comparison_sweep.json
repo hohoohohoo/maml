@@ -2,7 +2,7 @@
   "experiment_name": "adam_maml_comparison_sweep",
   "description": "Compare Adam and MAML across multiple configurations",
   "base_config": {
-    "num_iterations": 300000,
+    "num_iterations": [300000],
     "group_size": 61,
     "save": true,
     "metric": "SMAPE",
@@ -11,8 +11,8 @@
   },
   "sweep_params": {
     "pdk": ["ASAP7"],
-    "topology": ["intra_topology"],
-    "variation_type": ["cell"],
-    "task": ["extrapolation"]
+    "topology": ["topology_agnostic"],
+    "variation_type": ["transition"],
+    "task": ["interpolation"]
   }
 }
