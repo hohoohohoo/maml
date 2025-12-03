@@ -2,10 +2,10 @@
   "experiment_name": "maml_validation_sweep",
   "description": "MAML validation with parameter sweep",
   "base_config": {
-    "config": 2,
+    "config": 0,
     "num_iterations": 300000,
     "num_test_samples": 1000000,
-    "gpu_id":"4",
+    "gpu_id":"3",
     "save_results": true,
     "total_points": 61,
     "inner":1
