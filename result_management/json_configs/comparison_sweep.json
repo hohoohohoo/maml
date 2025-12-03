@@ -6,7 +6,7 @@
     "group_size": 61,
     "save": true,
     "metric": "SMAPE",
-    "innerdiv": [50, 100],
+    "innerdiv": [100],
     "meta": [32]
   },
   "sweep_params": {
