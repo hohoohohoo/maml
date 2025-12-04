@@ -10,8 +10,8 @@
     "meta": [32]
   },
   "sweep_params": {
-    "pdk": ["TSMC"],
-    "topology": ["intra_topology","topology_agnostic"],
+    "pdk": ["ASAP7"],
+    "topology": ["intra_topology"],
     "variation_type": ["transition","cell"],
     "task": ["interpolation","extrapolation"]
   }
