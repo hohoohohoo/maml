@@ -9,15 +9,15 @@
     "layer_length":40
   },
   "sweep_params": {
-    "data_type":["cell","transition"],
+    "data_type":["transition"],
     "meta": [
-      2,
-      4,
-      8
+      16,
+      32,
+      64
     ],
     "innerdiv": [
-      10,
-      100
+      50,
+      5
     ]
   }
 }
