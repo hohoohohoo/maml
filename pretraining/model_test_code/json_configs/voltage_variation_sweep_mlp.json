@@ -8,7 +8,7 @@
     "model_framework": "mlp"
   },
   "sweep_params": {
-    "pdk": ["asap7", "tsmc"],
+    "pdk": ["tsmc"],
     "data_type":["transition","cell"]
   },
   "pdk_specific": {
