@@ -6,7 +6,8 @@
     "gpu": "5",
     "num_iterations": 300000,
     "inner":1,
-    "layer_length":100
+    "layer_length":100,
+    "auto_resume": true
   },
   "sweep_params": {
     "data_type":["transition","cell"],
