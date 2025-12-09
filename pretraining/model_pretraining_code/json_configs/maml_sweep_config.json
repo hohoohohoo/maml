@@ -3,10 +3,10 @@
   "description": "Sweep over layer lengths and inner loop configurations",
   "base_config": {
     "dataset_config": 1,
-    "gpu": "5",
-    "num_iterations": 300000,
+    "gpu": "2",
+    "num_iterations": 900000,
     "inner":1,
-    "layer_length":100,
+    "layer_length":40,
     "auto_resume": true
   },
   "sweep_params": {
