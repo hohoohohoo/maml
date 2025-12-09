@@ -4,7 +4,7 @@
   "base_config": {
     "dataset_config": 0,
     "gpu": "2",
-    "num_iterations": 900000,
+    "num_iterations": 300000,
     "inner":1,
     "layer_length":40,
     "auto_resume": true
@@ -12,8 +12,8 @@
   "sweep_params": {
     "data_type":["transition","cell"],
     "meta": [
-      16,
-      32
+      32,
+      16
     ],
     "innerdiv": [
       100,
