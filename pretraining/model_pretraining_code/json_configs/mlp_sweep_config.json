@@ -2,8 +2,8 @@
   "experiment_name": "mlp_model_sweep",
   "description": "MLP model type and learning rate sweep",
   "base_config": {
-    "gpu_id": "1",
-    "num_iterations": 120000,
+    "gpu_id": "5",
+    "num_iterations": 600000,
     "learning_rate":0.0001,
     "model_type": "mlp"
   },
