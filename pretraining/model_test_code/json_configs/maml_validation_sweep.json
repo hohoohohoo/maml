@@ -8,12 +8,13 @@
     "gpu_id":"2",
     "save_results": true,
     "total_points": 61,
-    "inner":1
+    "inner":1,
+    "layer_length": 100
   },
   "sweep_params": {
     "data_type":["transition","cell"],
     "mode":["interpolation","extrapolation"],
-    "innerdiv": [50],
+    "innerdiv": [100],
     "meta":[32]
   }
 }
