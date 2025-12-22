@@ -4,7 +4,7 @@
   "base_config": {
     "dataset_config": 3,
     "gpu": "2",
-    "num_iterations": 150000,
+    "num_iterations": 300000,
     "inner":1,
     "layer_length":40,
     "auto_resume": true
