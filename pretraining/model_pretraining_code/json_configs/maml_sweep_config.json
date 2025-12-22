@@ -3,23 +3,19 @@
   "description": "Sweep over layer lengths and inner loop configurations",
   "base_config": {
     "dataset_config": 2,
-    "gpu": "6",
+    "gpu": "4",
     "num_iterations": 300000,
     "inner":1,
     "layer_length":40,
     "auto_resume": true
   },
   "sweep_params": {
-    "data_type":["transition"],
+    "data_type":["cell"],
     "meta": [
-      16,
-      32,
       64
     ],
     "innerdiv": [
-      5,
       10,
-      50,
       100
     ]
   }
