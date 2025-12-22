@@ -13,7 +13,7 @@
   },
   "sweep_params": {
     "data_type":["cell","transition"],
-    "mode":["interpolation"],
+    "mode":["extrapolation"],
     "innerdiv": [100],
     "meta":[32]
   }
