@@ -12,11 +12,10 @@
   "sweep_params": {
     "data_type":["transition","cell"],
     "meta": [
-      16,
-      64
+      32
     ],
     "innerdiv": [
-      100
+      10
     ]
   }
 }
