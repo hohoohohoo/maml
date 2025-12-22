@@ -3,7 +3,7 @@
   "description": "MLP model type and learning rate sweep",
   "base_config": {
     "gpu_id": "5",
-    "num_iterations": 900000,
+    "num_iterations": 1200000,
     "learning_rate":0.0001,
     "model_type": "mlp"
   },
