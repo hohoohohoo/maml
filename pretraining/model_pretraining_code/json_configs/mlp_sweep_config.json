@@ -8,7 +8,7 @@
     "model_type": "mlp"
   },
   "sweep_params": {
-    "data_type": ["transition","cell"],
+    "data_type": ["cell"],
     "dataset_config" : [0,1,2,3]
   }
 }
