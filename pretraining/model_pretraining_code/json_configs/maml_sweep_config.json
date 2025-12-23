@@ -12,10 +12,10 @@
   "sweep_params": {
     "data_type":["cell"],
     "meta": [
-      16,
       64
     ],
     "innerdiv": [
+      10,
       100
     ]
   }
