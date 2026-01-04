@@ -10,12 +10,17 @@
     "auto_resume": true
   },
   "sweep_params": {
-    "data_type":["transition","cell"],
+    "data_type":["cell"],
     "meta": [
-      32
+      16,
+      32,
+      64
     ],
     "innerdiv": [
-      10
+      5,
+      10,
+      50,
+      100
     ]
   }
 }
