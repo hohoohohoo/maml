@@ -11,15 +11,15 @@
     "meta_lr": 0.001,
     "innerdiv": 0.01,
     "K": 5,
-    "tasks_per_meta_batch": 4,
+    "tasks_per_meta_batch": 16,
     "checkpoint_dir": "./gnn/checkpoint",
-    "gpu": 0,
+    "gpu": 1,
     "auto_resume": true
   },
   "sweep_params": {
-    "conv_hidden_dim": [64, 128, 256],
-    "num_conv_layers": [2, 3, 4],
-    "fc_hidden_dim": [40, 64, 128],
-    "num_fc_layers": [2, 3, 4]
+    "conv_hidden_dim": [32,64,128],
+    "num_conv_layers": [2, 3],
+    "fc_hidden_dim": [32, 64, 128],
+    "num_fc_layers": [2]
   }
 }
