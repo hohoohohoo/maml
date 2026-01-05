@@ -2,7 +2,6 @@
   "experiment_name": "gnn_maml_architecture_sweep",
   "description": "Sweep over GNN architecture parameters: conv_hidden_dim, num_conv_layers, fc_hidden_dim, num_fc_layers",
   "base_config": {
-    "data_dir": "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_temp",
     "process": "LVT",
     "corner": "FF",
     "data_type": "cell",
