@@ -5,10 +5,10 @@
     "process": "LVT",
     "corner": "FF",
     "data_type": "cell",
-    "graph_mode": "full_graph",
+    "graph_mode": "stage_aware",
     "meta_lr": 0.001,
     "innerdiv": 10,
-    "gpu": 0
+    "gpu": 1
   },
   "sweep_params": {
     "conv_hidden_dim": [64,128],
