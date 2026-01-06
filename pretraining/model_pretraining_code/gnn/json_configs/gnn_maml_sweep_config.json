@@ -1,17 +1,18 @@
 {
-  "experiment_name": "gnn_maml_architecture_sweep",
-  "description": "Sweep over GNN architecture parameters: conv_hidden_dim, num_conv_layers, fc_hidden_dim, num_fc_layers",
+  "experiment_name": "gnn_maml_small_sweep",
+  "description": "Small GNN architecture sweep for testing (9 configs)",
   "base_config": {
     "process": "LVT",
     "corner": "FF",
     "data_type": "cell",
-    "graph_mode": "full_graph",
-    "total_iterations": 100000,
+    "graph_mode": "stage_aware",
+    "num_iterations": 100000,
+    "meta_lr": 0.001,
     "innerdiv": 10,
-    "gpu": 2
-    },
+    "gpu": 0
+  },
   "sweep_params": {
-    "conv_hidden_dim": [32,64,128],
+    "conv_hidden_dim": [64,128],
     "num_conv_layers": [2, 3],
     "fc_hidden_dim": [32, 64, 128],
     "num_fc_layers": [2]
