@@ -3,7 +3,7 @@
   "description": "TSMC GNN MAML architecture sweep (11D node features: 7 base + 4 process params)",
   "base_config": {
     "corner" : "FF",
-    "temperatrue" : "0",
+    "temperature" : "0",
     "data_type": "cell",
     "graph_mode": "full_graph",
     "meta_lr": 0.0001,
