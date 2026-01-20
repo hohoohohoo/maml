@@ -2,7 +2,7 @@
   "experiment_name": "gnn_maml_small_sweep",
   "description": "Small GNN architecture sweep for testing (9 configs)",
   "base_config": {
-    "process": "SLVT",
+    "process": "SRAM",
     "corner": "FF",
     "data_type": "cell",
     "graph_mode": "stage_aware",
