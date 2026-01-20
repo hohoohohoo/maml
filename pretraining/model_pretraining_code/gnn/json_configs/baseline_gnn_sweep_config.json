@@ -2,7 +2,7 @@
   "experiment_name": "baseline_gnn_architecture_sweep",
   "description": "Baseline GNN architecture sweep: conv_hidden_dim, num_conv_layers, fc_hidden_dim, num_fc_layers",
   "base_config": {
-    "process": "SLVT",
+    "process": "LVT",
     "corner": "FF",
     "data_type": "cell",
     "graph_mode": "stage_aware",
