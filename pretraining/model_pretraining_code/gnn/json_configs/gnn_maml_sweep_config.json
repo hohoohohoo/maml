@@ -8,11 +8,11 @@
     "graph_mode": "stage_aware",
     "meta_lr": 0.0001,
     "innerdiv": 10,
-    "gpu": 3
+    "gpu": 2
   },
   "sweep_params": {
     "conv_hidden_dim": [16 ,32 , 64 ],
-    "num_conv_layers": [3],
+    "num_conv_layers": [2],
     "fc_hidden_dim": [32 , 64 , 128 , 256],
     "num_fc_layers": [2]
   }
