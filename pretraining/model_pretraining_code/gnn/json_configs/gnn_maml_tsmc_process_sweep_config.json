@@ -11,7 +11,7 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 3
+    "gpu": 0
   },
   "sweep_params": {
     "conv_hidden_dim": [32, 64, 128],
