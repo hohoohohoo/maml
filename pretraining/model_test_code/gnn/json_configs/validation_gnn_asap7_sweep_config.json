@@ -1,0 +1,30 @@
+{
+  "experiment_name": "gnn_validation_sweep",
+  "description": "GNN validation sweep across process-corner combinations and architectures",
+  "base_config": {
+    "model_type": "maml",
+    "data_type": "cell",
+    "graph_mode": "full_graph",
+    "mode": "interpolation",
+    "total_points": 61,
+    "num_test_samples": 10000,
+    "num_iterations": 100000,
+    "save_results": true,
+    "filter_continuous": false,
+    "continuity_threshold": 0.18,
+    "gpu": 0
+  },
+  "sweep_params": {
+    "process": ["SRAM"],
+    "corner": ["FF"],
+    "conv_hidden_dim": [128,256],
+    "num_conv_layers": [2, 3],
+    "fc_hidden_dim": [32,64,128,256,512],
+    "num_fc_layers": [2]
+  },
+  "maml_config": {
+    "innerdiv": 10,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1
+  }
+}
