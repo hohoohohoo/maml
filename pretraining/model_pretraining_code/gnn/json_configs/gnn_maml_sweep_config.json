@@ -2,7 +2,7 @@
   "experiment_name": "gnn_maml_small_sweep",
   "description": "Small GNN architecture sweep for testing (9 configs)",
   "base_config": {
-    "process": "RVT",
+    "process": "LVT",
     "corner": "FF",
     "data_type": "cell",
     "graph_mode": "stage_aware",
@@ -11,9 +11,9 @@
     "gpu": 1
   },
   "sweep_params": {
-    "conv_hidden_dim": [128],
+    "conv_hidden_dim": [16],
     "num_conv_layers": [3,2],
-    "fc_hidden_dim": [32,64,128,256],
+    "fc_hidden_dim": [512],
     "num_fc_layers": [2]
   }
 }
