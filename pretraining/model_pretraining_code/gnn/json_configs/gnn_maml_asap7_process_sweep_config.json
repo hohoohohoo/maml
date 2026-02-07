@@ -16,7 +16,7 @@
   "sweep_params": {
     "conv_hidden_dim": [32],
     "num_conv_layers": [2],
-    "fc_hidden_dim": [256],
+    "fc_hidden_dim": [64, 128, 256],
     "num_fc_layers": [2]
   }
 }
