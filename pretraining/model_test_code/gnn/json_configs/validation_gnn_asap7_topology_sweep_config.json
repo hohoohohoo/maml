@@ -1,0 +1,29 @@
+{
+  "experiment_name": "gnn_validation_asap7_topology_sweep",
+  "description": "GNN topology validation sweep for ASAP7 Process dataset (intra_topology / topology_agnostic) with 11D node features",
+  "base_config": {
+    "model_type": "maml",
+    "data_type": "cell",
+    "graph_mode": "stage_aware",
+    "mode": "extrapolation",
+    "total_points": 61,
+    "num_test_samples": 10000,
+    "num_iterations": 300000,
+    "save_results": true,
+    "filter_continuous": true,
+    "continuity_threshold": 0.18,
+    "gpu": 0
+  },
+  "sweep_params": {
+    "experiment": ["intra_topology", "topology_agnostic"],
+    "conv_hidden_dim": [32, 64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [64, 128, 256],
+    "num_fc_layers": [2]
+  },
+  "maml_config": {
+    "innerdiv": 10,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1
+  }
+}
