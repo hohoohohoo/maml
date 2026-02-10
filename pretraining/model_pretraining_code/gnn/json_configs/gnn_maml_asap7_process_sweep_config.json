@@ -14,7 +14,7 @@
     "gpu": 2
   },
   "sweep_params": {
-    "conv_hidden_dim": [32],
+    "conv_hidden_dim": [64],
     "num_conv_layers": [2],
     "fc_hidden_dim": [256,512],
     "num_fc_layers": [2]
