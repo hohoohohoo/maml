@@ -11,12 +11,12 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 1
+    "gpu": 2
   },
   "sweep_params": {
-    "conv_hidden_dim": [128],
+    "conv_hidden_dim": [32],
     "num_conv_layers": [2],
-    "fc_hidden_dim": [64, 128, 256],
+    "fc_hidden_dim": [128,  256 , 512],
     "num_fc_layers": [2]
   }
 }
