@@ -8,12 +8,12 @@
     "graph_mode": "full_graph",
     "meta_lr": 0.0001,
     "innerdiv": 10,
-    "gpu": 5
+    "gpu": 6
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
     "num_conv_layers": [2],
-    "fc_hidden_dim": [256],
+    "fc_hidden_dim": [512],
     "num_fc_layers": [2]
   }
 }
