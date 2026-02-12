@@ -2,7 +2,7 @@
   "experiment_name": "gnn_maml_tsmc_sweep",
   "description": "TSMC GNN MAML architecture sweep (7D node features: base electrical features only)",
   "base_config": {
-    "corner" : "FF",
+    "corner" : "SS",
     "temperature" : "0",
     "data_type": "cell",
     "graph_mode": "full_graph",
@@ -17,7 +17,7 @@
     "pooling": "output"
   },
   "sweep_params": {
-    "conv_hidden_dim": [32],
+    "conv_hidden_dim": [32,64],
     "num_conv_layers": [2],
     "fc_hidden_dim": [256,512],
     "num_fc_layers": [2]
