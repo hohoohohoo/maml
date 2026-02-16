@@ -11,12 +11,17 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 4
+    "gpu": 4,
+    "pooling": "mean"
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
     "num_conv_layers": [2],
     "fc_hidden_dim": [256,512],
     "num_fc_layers": [2]
+  },
+  "_comments": {
+    "pooling_options": "mean, max, add, output (output-node-only)",
+    "output_node_idx_note": "output_node_idx is dynamically determined from topology cache (fallback default: 2)"
   }
 }
