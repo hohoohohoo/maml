@@ -11,8 +11,8 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 4,
-    "pooling": "mean"
+    "gpu": 0,
+    "pooling": "output"
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
