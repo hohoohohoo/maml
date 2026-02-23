@@ -11,17 +11,23 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 5,
-    "pooling": "output"
+    "gpu": 2,
+    "pooling": "mean"
   },
   "sweep_params": {
-    "conv_hidden_dim": [32,64],
+    "conv_hidden_dim": [128],
     "num_conv_layers": [2],
-    "fc_hidden_dim": [256,512],
+    "fc_hidden_dim": [128],
     "num_fc_layers": [2]
+  },
+  "resume_config": {
+    "auto_resume": true,
+    "resume": null,
+    "additional_iterations": null
   },
   "_comments": {
     "pooling_options": "mean, max, add, output (output-node-only)",
-    "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)"
+    "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)",
+    "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming."
   }
 }
