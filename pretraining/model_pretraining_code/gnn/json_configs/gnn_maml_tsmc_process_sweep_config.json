@@ -21,7 +21,7 @@
     "num_fc_layers": [2]
   },
   "resume_config": {
-    "auto_resume": true,
+    "auto_resume": false,
     "resume": null,
     "additional_iterations": null
   },
