@@ -7,7 +7,7 @@
     "meta_lr": 0.0001,
     "innerdiv": 10,
     "total_iterations": 300000,
-    "chunk_size": 100000,
+    "chunk_size": 30000,
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
