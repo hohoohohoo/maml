@@ -4,6 +4,7 @@
   "base_config": {
     "data_type": "cell",
     "graph_mode": "stage_aware",
+    "pooling": "mean",
     "lr": 0.0001,
     "wd": 0.005,
     "batch_size": 5,
@@ -22,6 +23,7 @@
     "optimizer": "Adam with weight decay",
     "batch_size_note": "Number of samples per mini-batch from randomly selected task",
     "lr_note": "Learning rate for Adam optimizer",
-    "wd_note": "Weight decay (L2 regularization)"
+    "wd_note": "Weight decay (L2 regularization)",
+    "pooling_options": "mean (global mean pooling) or output (output node only)"
   }
 }
