@@ -13,12 +13,12 @@
     "inner_steps": 1,
     "gpu": 1,
     "pooling": "mean",
-    "heads": 8
+    "heads": 4
   },
   "sweep_params": {
-    "conv_hidden_dim": [64],
-    "num_conv_layers": [2],
-    "fc_hidden_dim": [256],
+    "conv_hidden_dim": [32],
+    "num_conv_layers": [3],
+    "fc_hidden_dim": [512],
     "num_fc_layers": [2]
   },
   "resume_config": {
