@@ -15,9 +15,9 @@
     "pooling": "mean"
   },
   "sweep_params": {
-    "conv_hidden_dim": [32],
+    "conv_hidden_dim": [64],
     "num_conv_layers": [3],
-    "fc_hidden_dim": [256],
+    "fc_hidden_dim": [512],
     "num_fc_layers": [2]
   },
   "resume_config": {
