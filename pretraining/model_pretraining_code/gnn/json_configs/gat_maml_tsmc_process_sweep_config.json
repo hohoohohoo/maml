@@ -11,7 +11,7 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 1,
+    "gpu": 4,
     "pooling": "mean",
     "heads": 4
   },
@@ -22,7 +22,7 @@
     "num_fc_layers": [2]
   },
   "resume_config": {
-    "auto_resume": false,
+    "auto_resume": true,
     "resume": null,
     "additional_iterations": null
   },
