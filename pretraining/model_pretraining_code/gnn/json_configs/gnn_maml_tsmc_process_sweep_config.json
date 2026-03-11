@@ -11,13 +11,13 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 1,
+    "gpu": 3,
     "pooling": "mean"
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
-    "num_conv_layers": [3],
-    "fc_hidden_dim": [512],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [1024],
     "num_fc_layers": [2]
   },
   "resume_config": {
