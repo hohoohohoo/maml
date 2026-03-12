@@ -1,0 +1,36 @@
+{
+  "experiment_name": "gnn_maml_tsmc_process_sweep_vdd_only",
+  "description": "TSMC Process GNN MAML sweep - VDD_ONLY mode (voltage only on VDD node, 0 elsewhere)",
+  "base_config": {
+    "data_type": "cell",
+    "graph_mode": "stage_aware",
+    "voltage_mode": "vdd_only",
+    "meta_lr": 0.0001,
+    "innerdiv": 10,
+    "total_iterations": 300000,
+    "chunk_size": 100000,
+    "K": 5,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1,
+    "gpu": 5,
+    "pooling": "mean"
+  },
+  "sweep_params": {
+    "conv_hidden_dim": [64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [256],
+    "num_fc_layers": [2]
+  },
+  "resume_config": {
+    "auto_resume": true,
+    "resume": null,
+    "additional_iterations": null
+  },
+  "_comments": {
+    "pooling_options": "mean, max, add, output (output-node-only)",
+    "voltage_mode_options": "all_nodes (voltage on all nodes), vdd_only (voltage only on VDD, 0 elsewhere)",
+    "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)",
+    "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming.",
+    "dataset_note": "Requires train_cell_stage_aware_vdd_only.pth dataset generated with --voltage_mode vdd_only"
+  }
+}
