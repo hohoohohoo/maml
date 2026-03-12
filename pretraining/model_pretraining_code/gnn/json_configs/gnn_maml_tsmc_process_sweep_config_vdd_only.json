@@ -2,7 +2,7 @@
   "experiment_name": "gnn_maml_tsmc_process_sweep_vdd_only",
   "description": "TSMC Process GNN MAML sweep - VDD_ONLY mode (voltage only on VDD node, 0 elsewhere)",
   "base_config": {
-    "data_type": "cell",
+    "data_type": "transition",
     "graph_mode": "stage_aware",
     "voltage_mode": "vdd_only",
     "meta_lr": 0.0001,
@@ -13,7 +13,7 @@
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
     "gpu": 5,
-    "pooling": "mean"
+    "pooling": "output"
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
