@@ -10,7 +10,7 @@
     "total_iterations": 300000,
     "chunk_size": 100000,
     "K": 5,
-    "tasks_per_meta_batch": 32,
+    "tasks_per_meta_batch": 16,
     "inner_steps": 1,
     "gpu": 0,
     "pooling": "mean"
