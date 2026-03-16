@@ -14,7 +14,7 @@
     "inner_steps": 1,
     "gpu": 5,
     "pooling": "mean",
-    "cahce_path" : "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical_gatectrl.pth"
+    "cache_path": "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical_gatectrl.pth"
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
