@@ -12,12 +12,13 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 3,
-    "pooling": "mean"
+    "gpu": 5,
+    "pooling": "mean",
+    "cahce_path" : "stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical_gatectrl.pth"
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
-    "num_conv_layers": [3],
+    "num_conv_layers": [2],
     "fc_hidden_dim": [256],
     "num_fc_layers": [2]
   },
@@ -30,6 +31,7 @@
     "pooling_options": "mean, max, add, output (output-node-only)",
     "voltage_mode_options": "all_nodes (voltage on all nodes), vdd_only (voltage only on VDD, 0 elsewhere)",
     "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)",
-    "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming."
+    "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming.",
+    "cache_path_note": "Add 'cache_path' in base_config to override topology cache (e.g., for gate control edges). Available caches: stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical.pth (default), stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical_gatectrl.pth (with gate control edges)"
   }
 }
