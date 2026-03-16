@@ -14,7 +14,7 @@
     "mode":"interpolation"
   },
   "sweep_params": {
-    "config": [0,1,2, 3],
+    "config": [3,2,1,0],
     "data_type": ["cell", "transition"]
   }
 }
