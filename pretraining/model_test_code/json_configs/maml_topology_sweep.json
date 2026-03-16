@@ -6,15 +6,19 @@
     "innerdiv": 100,
     "meta": 32,
     "num_iterations": 300000,
-    "gpu_id": "0",
+    "gpu_id": "7",
     "num_test_samples": 1000000,
     "save_results": true,
     "indices": null,
-    "total_points": 61
+    "total_points": 61,
+    "adaptation_method": "selective_adam"
   },
   "sweep_params": {
-    "config": [0, 1, 2, 3],
+    "config": [3],
     "mode": ["extrapolation", "interpolation"],
     "data_type": ["cell", "transition"]
+  },
+  "_comments": {
+    "adaptation_method_options": "selective_adam (grad/move + conditional Adam), adam (direct Adam, no grad/move)"
   }
 }
