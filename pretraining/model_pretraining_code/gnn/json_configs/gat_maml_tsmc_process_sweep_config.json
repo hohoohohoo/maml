@@ -4,6 +4,8 @@
   "base_config": {
     "data_type": "cell",
     "graph_mode": "stage_aware",
+    "voltage_mode": "all_nodes",
+    "cache_path": "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical_gatectrl.pth",
     "meta_lr": 0.0001,
     "innerdiv": 10,
     "total_iterations": 300000,
@@ -16,9 +18,9 @@
     "heads": 4
   },
   "sweep_params": {
-    "conv_hidden_dim": [32],
-    "num_conv_layers": [3],
-    "fc_hidden_dim": [512],
+    "conv_hidden_dim": [64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [256],
     "num_fc_layers": [2]
   },
   "resume_config": {
@@ -31,6 +33,8 @@
     "heads_note": "Number of attention heads. conv_hidden_dim should be divisible by heads for efficient computation",
     "num_fc_layers_note": "GAT supports only 2 or 3 FC layers",
     "pooling_options": "mean, max, add, output (output-node-only)",
+    "voltage_mode_options": "all_nodes (voltage to all nodes) or vdd_only (voltage only on VDD node)",
+    "cache_path_note": "Override topology cache path. Use gatectrl cache for gate control edges",
     "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)",
     "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming."
   }
