@@ -4,7 +4,7 @@
   "base_config": {
     "data_type": "cell",
     "graph_mode": "stage_aware",
-    "voltage_mode": "all_nodes",
+    "voltage_mode": "vdd_mos",
     "meta_lr": 0.0001,
     "innerdiv": 10,
     "total_iterations": 300000,
@@ -28,7 +28,7 @@
   },
   "_comments": {
     "pooling_options": "mean, max, add, output (output-node-only)",
-    "voltage_mode_options": "all_nodes (voltage on all nodes), vdd_only (voltage only on VDD, 0 elsewhere)",
+    "voltage_mode_options": "all_nodes (voltage on all nodes), vdd_only (voltage only on VDD, 0 elsewhere), vdd_mos (voltage on VDD and MOS transistors only)",
     "normalization_options": "zscore (z-score normalization, default), minmax (min-max to [epsilon, 1] range, 0=placeholder)",
     "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)",
     "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming.",
