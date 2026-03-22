@@ -5,11 +5,11 @@
     "data_type": "cell",
     "graph_mode": "stage_aware",
     "meta_lr": 0.0001,
-    "innerdiv": 10,
+    "innerdiv": 100,
     "total_iterations": 300000,
     "chunk_size": 100000,
     "K": 5,
-    "tasks_per_meta_batch": 16,
+    "tasks_per_meta_batch": 32,
     "inner_steps": 1,
     "gpu": 5,
     "pooling": "mean"
