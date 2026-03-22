@@ -5,7 +5,7 @@
     "data_type": "cell",
     "graph_mode": "stage_aware",
     "voltage_mode": "all_nodes",
-    "temp_mode": "temp_all",
+    "temp_mode": "typical",
     "meta_lr": 0.0001,
     "innerdiv": 10,
     "total_iterations": 300000,
@@ -14,7 +14,8 @@
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
     "gpu": 3,
-    "pooling": "mean"
+    "pooling": "mean",
+    "cache_path": "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical_gatectrl.pth"
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
