@@ -6,7 +6,6 @@
     "graph_mode": "stage_aware",
     "voltage_mode": "all_nodes",
     "temp_mode": "temp_all",
-    "topology_suffix": "",
     "meta_lr": 0.0001,
     "innerdiv": 10,
     "total_iterations": 300000,
