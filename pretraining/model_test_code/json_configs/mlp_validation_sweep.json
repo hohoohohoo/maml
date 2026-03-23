@@ -12,7 +12,7 @@
     "gpu_id": "6"
   },
   "sweep_params": {
-    "data_type":["cell"],
+    "data_type":["transition"],
     "mode":["interpolation","extrapolation"]
   }
 }
