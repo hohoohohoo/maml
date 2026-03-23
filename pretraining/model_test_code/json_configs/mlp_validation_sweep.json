@@ -2,7 +2,7 @@
   "experiment_name": "mlp_validation_sweep",
   "description": "MLP validation with parameter sweep",
   "base_config": {
-    "config": 2,
+    "config": 3,
     "num_iterations": 300000,
     "num_test_samples": 1000000,
     "save_results": true,
@@ -12,7 +12,7 @@
     "gpu_id": "6"
   },
   "sweep_params": {
-    "data_type":["cell"],
+    "data_type":["transition"],
     "mode":["interpolation","extrapolation"]
   }
 }
