@@ -6,6 +6,7 @@
     "graph_mode": "stage_aware",
     "voltage_mode": "all_nodes",
     "temp_mode": "typical",
+    "gatectrl": true,
     "meta_lr": 0.0001,
     "innerdiv": 10,
     "total_iterations": 300000,
