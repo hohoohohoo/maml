@@ -5,17 +5,19 @@
     "data_type": "cell",
     "graph_mode": "stage_aware",
     "meta_lr": 0.0001,
-    "innerdiv": 100,
+    "innerdiv": 10,
     "total_iterations": 300000,
     "chunk_size": 100000,
     "K": 5,
-    "tasks_per_meta_batch": 32,
+    "tasks_per_meta_batch": 16,
     "inner_steps": 1,
     "gpu": 5,
-    "pooling": "mean"
+    "pooling": "mean",
+    "inputport": true,
+    "cache_path": "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_asap7_gatectrl_inputport.pth"
   },
   "sweep_params": {
-    "conv_hidden_dim": [128],
+    "conv_hidden_dim": [64],
     "num_conv_layers": [2],
     "fc_hidden_dim": [256],
     "num_fc_layers": [2]
@@ -28,6 +30,9 @@
   "_comments": {
     "pooling_options": "mean, max, add, output (output-node-only)",
     "output_node_idx_note": "output_node_idx is dynamically determined from topology cache (fallback default: 2)",
-    "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming."
+    "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming.",
+    "cache_path_note": "gatectrl is auto-detected from cache_path filename. Available caches: stage_aware_topology_cache_asap7.pth (default), stage_aware_topology_cache_asap7_gatectrl.pth (with gate control edges). gatectrl only affects adjacency matrix (cache), not train data file.",
+    "inputport_note": "Set 'inputport': true to use inputport topology. Inputport affects node features, so train file changes to train_cell_stage_aware_inputport_10pct.pth",
+    "checkpoint_suffix_note": "checkpoint_suffix is auto-generated: cache_suffix (gatectrl from cache_path) + topology_suffix (inputport). Example: gatectrl cache + inputport = checkpoints_gatectrl_inputport/"
   }
 }
