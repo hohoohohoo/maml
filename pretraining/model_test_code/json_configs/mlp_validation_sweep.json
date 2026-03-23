@@ -2,13 +2,14 @@
   "experiment_name": "mlp_validation_sweep",
   "description": "MLP validation with parameter sweep",
   "base_config": {
-    "config": 1,
+    "config": 2,
     "num_iterations": 300000,
     "num_test_samples": 1000000,
     "save_results": true,
     "total_points": 61,
-    "model_type" : "aadam",
-    "gpu_id": "4"
+    "model_type" : "mlp",
+    "adaptation_method": "selective_adam",
+    "gpu_id": "7"
   },
   "sweep_params": {
     "data_type":["transition","cell"],
