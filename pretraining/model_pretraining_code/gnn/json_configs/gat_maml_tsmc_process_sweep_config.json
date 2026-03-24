@@ -3,7 +3,7 @@
   "description": "TSMC Process GAT MAML architecture sweep (11D node features: 7 base + 4 process params)",
   "base_config": {
     "data_type": "cell",
-    "graph_mode": "full_graph",
+    "graph_mode": "stage_aware",
     "voltage_mode": "all_nodes",
     "meta_lr": 0.0001,
     "innerdiv": 10,
@@ -12,9 +12,10 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 1,
+    "gpu": 5,
     "pooling": "mean",
-    "heads": 4
+    "heads": 4,
+    "related_pin_only": true
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
@@ -35,6 +36,7 @@
     "voltage_mode_options": "all_nodes (voltage to all nodes) or vdd_only (voltage only on VDD node)",
     "cache_path_note": "Override topology cache path. Use gatectrl cache for gate control edges",
     "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)",
+    "related_pin_only_note": "Set true to use related_pin_only dataset. Input slew assigned only to triggering input port. Adds _relpin suffix to paths.",
     "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming."
   }
 }
