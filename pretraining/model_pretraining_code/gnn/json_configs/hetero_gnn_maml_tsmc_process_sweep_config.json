@@ -1,0 +1,48 @@
+{
+  "experiment_name": "hetero_gnn_maml_tsmc_process_sweep",
+  "description": "TSMC Process Heterogeneous GNN MAML architecture sweep (11D node features: 7 base + 4 process params)",
+  "base_config": {
+    "data_type": "cell",
+    "graph_mode": "stage_aware",
+    "voltage_mode": "all_nodes",
+    "temp_mode": "typical",
+    "inputport": false,
+    "meta_lr": 0.0001,
+    "innerdiv": 10,
+    "total_iterations": 300000,
+    "chunk_size": 100000,
+    "K": 5,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1,
+    "gpu": 5,
+    "pooling": "mean",
+    "conv_type": "gcn",
+    "num_node_types": 4,
+    "related_pin_only": false
+  },
+  "sweep_params": {
+    "conv_hidden_dim": [64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [256],
+    "num_fc_layers": [2]
+  },
+  "resume_config": {
+    "auto_resume": true,
+    "resume": null,
+    "additional_iterations": null
+  },
+  "_comments": {
+    "model_type": "Heterogeneous GNN - type-specific transformations for Power, Port, NMOS, PMOS nodes",
+    "conv_type_options": "gcn (GCN-based), gat (GAT-based with attention)",
+    "num_node_types_note": "Number of node types: 4 (Power, Port, NMOS, PMOS). Default: 4",
+    "pooling_options": "mean, max, add, output (output-node-only)",
+    "voltage_mode_options": "all_nodes (voltage on all nodes), vdd_only (voltage only on VDD, 0 elsewhere), vdd_mos (voltage on VDD and MOS transistors only)",
+    "normalization_options": "zscore (z-score normalization, default), minmax (min-max to [epsilon, 1] range, 0=placeholder)",
+    "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)",
+    "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming.",
+    "cache_path_note": "gatectrl is auto-detected from cache_path filename. Available caches: stage_aware_topology_cache_tsmc_..._typical.pth (default), stage_aware_topology_cache_tsmc_..._typical_gatectrl.pth (with gate control edges). gatectrl only affects adjacency matrix (cache), not train data file.",
+    "inputport_note": "Set 'inputport': true to use inputport topology. Inputport affects node features, so train file changes to train_cell_stage_aware_inputport.pth",
+    "checkpoint_suffix_note": "checkpoint_suffix is auto-generated: cache_suffix (gatectrl from cache_path) + topology_suffix (inputport). Example: gatectrl cache + inputport = checkpoints_gatectrl_inputport/",
+    "related_pin_only_note": "Set 'related_pin_only': true to use dataset with _relpin suffix (input_slew assigned only to related_pin MOS/port). Independent of inputport - works with both topologies."
+  }
+}
