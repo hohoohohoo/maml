@@ -13,7 +13,7 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 3,
+    "gpu": 4,
     "pooling": "mean",
     "related_pin_only": true
   },
