@@ -13,7 +13,7 @@
     "inner_steps": 1,
     "gpu": 5,
     "pooling": "mean",
-    "inputport": true,
+    "inputport": false,
     "related_pin_only": true
   },
   "sweep_params": {
