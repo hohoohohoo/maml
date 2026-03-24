@@ -13,13 +13,14 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 3,
+    "gpu": 4,
     "pooling": "mean",
-    "related_pin_only": true
+    "cache_path" : "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical_gatectrl_inputport.pth",
+    "related_pin_only": false
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
-    "num_conv_layers": [3],
+    "num_conv_layers": [2],
     "fc_hidden_dim": [256],
     "num_fc_layers": [2]
   },
