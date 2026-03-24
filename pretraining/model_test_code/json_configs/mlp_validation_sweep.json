@@ -9,10 +9,10 @@
     "total_points": 61,
     "model_type" : "mlp",
     "adaptation_method": "selective_adam",
-    "gpu_id": "6"
+    "gpu_id": "7"
   },
   "sweep_params": {
-    "data_type":["cell"],
+    "data_type":["transition"],
     "mode":["interpolation","extrapolation"]
   }
 }
