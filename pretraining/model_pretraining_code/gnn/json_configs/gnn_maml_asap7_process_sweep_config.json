@@ -14,7 +14,7 @@
     "gpu": 5,
     "pooling": "mean",
     "inputport": true,
-    "cache_path": "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_asap7_gatectrl_inputport.pth"
+    "related_pin_only": true
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
@@ -33,6 +33,7 @@
     "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming.",
     "cache_path_note": "gatectrl is auto-detected from cache_path filename. Available caches: stage_aware_topology_cache_asap7.pth (default), stage_aware_topology_cache_asap7_gatectrl.pth (with gate control edges). gatectrl only affects adjacency matrix (cache), not train data file.",
     "inputport_note": "Set 'inputport': true to use inputport topology. Inputport affects node features, so train file changes to train_cell_stage_aware_inputport_10pct.pth",
-    "checkpoint_suffix_note": "checkpoint_suffix is auto-generated: cache_suffix (gatectrl from cache_path) + topology_suffix (inputport). Example: gatectrl cache + inputport = checkpoints_gatectrl_inputport/"
+    "checkpoint_suffix_note": "checkpoint_suffix is auto-generated: cache_suffix (gatectrl from cache_path) + topology_suffix (inputport). Example: gatectrl cache + inputport = checkpoints_gatectrl_inputport/",
+    "related_pin_only_note": "Set 'related_pin_only': true to use dataset with _relpin suffix (input_slew assigned only to related_pin MOS/port). Independent of inputport - works with both topologies."
   }
 }
