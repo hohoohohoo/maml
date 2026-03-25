@@ -2,7 +2,7 @@
   "experiment_name": "hetero_gnn_maml_tsmc_process_sweep",
   "description": "TSMC Process Heterogeneous GNN MAML architecture sweep (11D node features: 7 base + 4 process params)",
   "base_config": {
-    "data_type": "cell",
+    "data_type": "transition",
     "graph_mode": "stage_aware",
     "voltage_mode": "all_nodes",
     "temp_mode": "typical",
@@ -15,10 +15,10 @@
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
     "gpu": 1,
-    "pooling": "mean",
+    "pooling": "output",
     "conv_type": "gcn",
     "num_node_types": 4,
-    "related_pin_only": true
+    "related_pin_only": false
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
