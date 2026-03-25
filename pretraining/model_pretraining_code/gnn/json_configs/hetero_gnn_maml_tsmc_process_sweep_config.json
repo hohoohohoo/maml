@@ -18,7 +18,7 @@
     "pooling": "mean",
     "conv_type": "gcn",
     "num_node_types": 4,
-    "related_pin_only": false
+    "related_pin_only": true
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
