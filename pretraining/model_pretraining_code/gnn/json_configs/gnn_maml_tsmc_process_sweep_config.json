@@ -16,7 +16,7 @@
     "inner_steps": 1,
     "gpu": 5,
     "pooling": "mean",
-    "related_pin_only": true
+    "related_pin_only": false
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
