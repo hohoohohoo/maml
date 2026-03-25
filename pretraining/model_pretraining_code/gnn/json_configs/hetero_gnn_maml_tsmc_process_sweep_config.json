@@ -14,7 +14,7 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 3,
+    "gpu": 1,
     "pooling": "mean",
     "conv_type": "gcn",
     "num_node_types": 4,
