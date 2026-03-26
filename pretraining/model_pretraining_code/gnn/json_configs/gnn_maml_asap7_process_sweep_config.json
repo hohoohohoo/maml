@@ -36,6 +36,6 @@
     "inputport_note": "Set 'inputport': true to use inputport topology. Inputport affects node features, so train file changes to train_cell_stage_aware_inputport_10pct.pth",
     "checkpoint_suffix_note": "checkpoint_suffix is auto-generated: cache_suffix (gatectrl from cache_path) + topology_suffix (inputport). Example: gatectrl cache + inputport = checkpoints_gatectrl_inputport/",
     "related_pin_only_note": "Set 'related_pin_only': true to use dataset with _relpin suffix (input_slew assigned only to related_pin MOS/port). Independent of inputport - works with both topologies.",
-    "sampling_note": "Sampling percentage for training data: 'full' or 'Xpct' (e.g., '10pct', '50pct'). Always adds _{sampling} suffix to train file and checkpoint naming."
+    "sampling_note": "Sampling percentage for training data: 'full' (no suffix) or 'Xpct' (e.g., '10pct', '50pct'). Affects train file path and checkpoint naming."
   }
 }
