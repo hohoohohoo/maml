@@ -13,9 +13,10 @@
     "inner_steps": 1,
     "gpu": 5,
     "pooling": "mean",
-    "inputport": false,
+    "inputport": true,
     "related_pin_only": false,
-    "sampling": "10pct"
+    "sampling": "10pct",
+    "cache_path" : "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_asap7sc7p5t_28_L_gatectrl_inputport.pth" 
     },
   "sweep_params": {
     "conv_hidden_dim": [64],
