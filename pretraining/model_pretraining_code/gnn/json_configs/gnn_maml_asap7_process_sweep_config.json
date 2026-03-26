@@ -2,7 +2,7 @@
   "experiment_name": "gnn_maml_asap7_process_sweep",
   "description": "ASAP7 Process GNN MAML architecture sweep (11D node features: 7 base + 4 process params)",
   "base_config": {
-    "data_type": "cell",
+    "data_type": "transition",
     "graph_mode": "stage_aware",
     "meta_lr": 0.0001,
     "innerdiv": 10,
@@ -11,11 +11,11 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 3,
-    "pooling": "mean",
+    "gpu": 5,
+    "pooling": "output",
     "inputport": false,
     "related_pin_only": false,
-    "sampling": "full"
+    "sampling": "10pct"
     },
   "sweep_params": {
     "conv_hidden_dim": [64],
