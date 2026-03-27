@@ -19,7 +19,7 @@
     "cache_path": "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_asap7sc7p5t_28_L_bidir.pth"
   },
   "sweep_params": {
-    "conv_hidden_dim": [128],
+    "conv_hidden_dim": [64],
     "num_conv_layers": [2],
     "fc_hidden_dim": [256],
     "num_fc_layers": [2]
