@@ -11,7 +11,7 @@
     "K": 5,
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
-    "gpu": 5,
+    "gpu": 2,
     "pooling": "mean",
     "inputport": false,
     "related_pin_only": false,
