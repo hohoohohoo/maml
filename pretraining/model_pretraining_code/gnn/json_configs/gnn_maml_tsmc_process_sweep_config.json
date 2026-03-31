@@ -2,11 +2,13 @@
   "experiment_name": "gnn_maml_tsmc_process_sweep",
   "description": "TSMC Process GNN MAML architecture sweep (11D node features: 7 base + 4 process params)",
   "base_config": {
-    "data_type": "transition",
-    "graph_mode": "full_graph",
-    "voltage_mode": "vdd_only",
+    "data_type": "cell",
+    "graph_mode": "stage_aware",
+    "voltage_mode": "all_nodes",
     "temp_mode": "typical",
-    "inputport":false ,
+    "inputport": false,
+    "related_pin_only": false,
+    "cache_path": "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical_directmos.pth",
     "meta_lr": 0.0001,
     "innerdiv": 10,
     "total_iterations": 300000,
@@ -15,8 +17,7 @@
     "tasks_per_meta_batch": 16,
     "inner_steps": 1,
     "gpu": 5,
-    "pooling": "output",
-    "related_pin_only": true
+    "pooling": "mean"
     },
   "sweep_params": {
     "conv_hidden_dim": [64],
@@ -35,9 +36,9 @@
     "normalization_options": "zscore (z-score normalization, default), minmax (min-max to [epsilon, 1] range, 0=placeholder)",
     "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)",
     "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming.",
-    "cache_path_note": "gatectrl/bidir are auto-detected from cache_path filename. Available caches: *_gatectrl.pth (gate control edges), *_bidir.pth (bidirectional edges). These only affect adjacency matrix (cache), not train data file.",
+    "cache_path_note": "Path to topology cache file. Only affects adjacency matrix, NOT train data file. Options auto-detected from filename: gatectrl (gate control edges), bidir (bidirectional), directmos (skip intermediate nodes). Example: stage_aware_topology_cache_tsmc_*_gatectrl_directmos.pth",
     "inputport_note": "Set 'inputport': true to use inputport topology. Inputport affects node features, so train file changes to train_cell_stage_aware_inputport.pth",
-    "checkpoint_suffix_note": "checkpoint_suffix is auto-generated: cache_suffix (gatectrl/bidir from cache_path) + topology_suffix (inputport). Example: bidir cache + inputport = checkpoints_bidir_inputport/",
+    "checkpoint_suffix_note": "checkpoint_suffix is auto-generated: cache_suffix (gatectrl/bidir/directmos from cache_path) + topology_suffix (inputport). Example: directmos cache + inputport = checkpoints_directmos_inputport/",
     "related_pin_only_note": "Set 'related_pin_only': true to use dataset with _relpin suffix (input_slew assigned only to related_pin MOS/port). Independent of inputport - works with both topologies."
   }
 }
