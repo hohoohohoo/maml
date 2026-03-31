@@ -2,7 +2,7 @@
   "experiment_name": "gnn_maml_tsmc_process_sweep",
   "description": "TSMC Process GNN MAML architecture sweep (11D node features: 7 base + 4 process params)",
   "base_config": {
-    "data_type": "cell",
+    "data_type": "transition",
     "graph_mode": "stage_aware",
     "voltage_mode": "all_nodes",
     "temp_mode": "typical",
@@ -30,7 +30,7 @@
     "additional_iterations": null
   },
   "loss_logging": {
-    "enabled": true,
+    "enabled": false,
     "log_every": 100,
     "save_dir": null
   },
