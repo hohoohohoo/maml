@@ -31,7 +31,7 @@
   },
   "loss_logging": {
     "enabled": true,
-    "log_every": 500,
+    "log_every": 100,
     "save_dir": null
   },
   "_comments": {
