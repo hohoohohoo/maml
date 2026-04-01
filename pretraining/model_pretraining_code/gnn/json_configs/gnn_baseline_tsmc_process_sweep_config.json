@@ -12,7 +12,7 @@
     "batch_size": 5,
     "total_iterations": 300000,
     "chunk_size": 100000,
-    "gpu": 4
+    "gpu": 6
   },
   "sweep_params": {
     "conv_hidden_dim": [64],
