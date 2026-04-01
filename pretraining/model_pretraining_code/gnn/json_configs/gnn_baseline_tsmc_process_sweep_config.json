@@ -21,7 +21,7 @@
     "num_fc_layers": [2]
   },
   "loss_logging": {
-    "enabled": false,
+    "enabled": true,
     "log_every": 100,
     "save_dir": null
   },
