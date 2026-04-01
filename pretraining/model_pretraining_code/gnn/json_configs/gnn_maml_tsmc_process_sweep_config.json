@@ -16,7 +16,7 @@
     "K": 5,
     "tasks_per_meta_batch": 32,
     "inner_steps": 1,
-    "gpu": 4,
+    "gpu": 3,
     "pooling": "mean"
     },
   "sweep_params": {
