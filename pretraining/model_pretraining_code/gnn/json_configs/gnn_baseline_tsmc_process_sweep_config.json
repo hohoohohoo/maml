@@ -2,9 +2,9 @@
   "experiment_name": "gnn_baseline_tsmc_process_sweep",
   "description": "TSMC Process GNN Baseline architecture sweep (11D node features: 7 base + 4 process params)",
   "base_config": {
-    "data_type": "transition",
+    "data_type": "cell",
     "graph_mode": "full_graph",
-    "pooling": "output",
+    "pooling": "mean",
     "voltage_mode": "vdd_only",
     "related_pin_only": true,
     "lr": 0.0001,
