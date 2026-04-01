@@ -5,6 +5,8 @@
     "data_type": "cell",
     "graph_mode": "stage_aware",
     "pooling": "mean",
+    "voltage_mode": "vdd_only",
+    "related_pin_only": false,
     "lr": 0.0001,
     "wd": 0.005,
     "batch_size": 5,
@@ -19,7 +21,7 @@
     "num_fc_layers": [2]
   },
   "loss_logging": {
-    "enabled": true,
+    "enabled": false,
     "log_every": 100,
     "save_dir": null
   },
@@ -30,6 +32,8 @@
     "lr_note": "Learning rate for Adam optimizer",
     "wd_note": "Weight decay (L2 regularization)",
     "pooling_options": "mean (global mean pooling) or output (output node only)",
+    "voltage_mode_options": "all_nodes (voltage on all nodes), vdd_only (voltage only on VDD, 0 elsewhere)",
+    "related_pin_only_note": "Set true to use related_pin_only slew assignment. Adds _relpin suffix to dataset/checkpoint paths.",
     "loss_logging_note": "Set loss_logging.enabled=true to save training loss at specified intervals. log_every controls frequency (iterations). save_dir is optional (defaults to loss_logs/ directory)."
   }
 }
