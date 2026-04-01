@@ -1,0 +1,17 @@
+{
+  "dataset_config": 3,
+  "data_type": "cell",
+  "gpu": "3",
+  "num_iterations": 300000,
+  "layer_length": 40,
+  "inner": 1,
+  "innerdiv": 100,
+  "meta": 32,
+  "resume": null,
+  "auto_resume": false,
+  "loss_logging": {
+    "enabled": true,
+    "log_every": 100,
+    "save_dir": null
+  }
+}
