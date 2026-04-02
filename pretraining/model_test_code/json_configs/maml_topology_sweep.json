@@ -14,7 +14,7 @@
     "adaptation_method": "selective_adam"
   },
   "sweep_params": {
-    "config": [3],
+    "config": [1],
     "mode": ["extrapolation", "interpolation"],
     "data_type": ["cell", "transition"]
   },
