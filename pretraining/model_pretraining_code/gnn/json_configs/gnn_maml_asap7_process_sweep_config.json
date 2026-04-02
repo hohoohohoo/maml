@@ -24,7 +24,7 @@
     "num_fc_layers": [2]
   },
   "resume_config": {
-    "auto_resume": false,
+    "auto_resume": true,
     "resume": "/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/gnn_maml_asap7_process_final/checkpoints_directmos_inputport/checkpoint_epoch_100.pth",
     "additional_iterations": null
   },
