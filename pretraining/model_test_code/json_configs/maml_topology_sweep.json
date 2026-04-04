@@ -6,7 +6,7 @@
     "innerdiv": 100,
     "meta": 32,
     "num_iterations": 300000,
-    "gpu_id": "7",
+    "gpu_id": "3",
     "num_test_samples": 1000000,
     "save_results": true,
     "indices": null,
@@ -16,7 +16,7 @@
   "sweep_params": {
     "config": [1],
     "mode": ["extrapolation", "interpolation"],
-    "data_type": ["cell", "transition"]
+    "data_type": ["transition"]
   },
   "_comments": {
     "adaptation_method_options": "selective_adam (grad/move + conditional Adam), adam (direct Adam, no grad/move)"
