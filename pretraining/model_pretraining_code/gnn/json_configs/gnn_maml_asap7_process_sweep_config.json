@@ -19,13 +19,13 @@
     "sampling": "full"
     },
   "sweep_params": {
-    "conv_hidden_dim": [32],
+    "conv_hidden_dim": [64],
     "num_conv_layers": [2],
-    "fc_hidden_dim": [512],
+    "fc_hidden_dim": [256],
     "num_fc_layers": [2]
   },
   "resume_config": {
-    "auto_resume": true,
+    "auto_resume": false,
     "additional_iterations": null
   },
   "_comments": {
