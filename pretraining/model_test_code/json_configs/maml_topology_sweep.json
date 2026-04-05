@@ -16,7 +16,7 @@
   "sweep_params": {
     "config": [1],
     "mode": ["extrapolation", "interpolation"],
-    "data_type": ["transition"]
+    "data_type": ["cell"]
   },
   "_comments": {
     "adaptation_method_options": "selective_adam (grad/move + conditional Adam), adam (direct Adam, no grad/move)"
