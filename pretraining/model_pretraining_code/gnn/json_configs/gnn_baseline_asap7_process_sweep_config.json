@@ -35,7 +35,7 @@
     "pooling_options": "mean (global mean pooling) or output (output node only)",
     "voltage_mode_options": "all_nodes (voltage on all nodes), vdd_only (voltage only on VDD, 0 elsewhere)",
     "related_pin_only_note": "Set true to use related_pin_only slew assignment. Adds _relpin suffix to dataset/checkpoint paths.",
-    "sampling_note": "Sampling percentage for training data: 'full' (no suffix) or 'Xpct' (e.g., '10pct', '50pct'). Affects train file path and checkpoint naming.",
+    "sampling_note": "Sampling percentage for training data: 'full' or 'Xpct' (e.g., '10pct', '50pct'). Always adds suffix (e.g., _full, _10pct). Affects train file path and checkpoint naming.",
     "loss_logging_note": "Set loss_logging.enabled=true to save training loss at specified intervals. log_every controls frequency (iterations). save_dir is optional (defaults to loss_logs/ directory)."
   }
 }
