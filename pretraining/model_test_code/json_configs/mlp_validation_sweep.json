@@ -9,7 +9,7 @@
     "total_points": 61,
     "model_type" : "aadam",
     "adaptation_method": "adam",
-    "gpu_id": "2"
+    "gpu_id": "0"
   },
   "sweep_params": {
     "data_type":["cell","transition"],
