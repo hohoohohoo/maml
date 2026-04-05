@@ -7,7 +7,7 @@
     "pooling": "output",
     "voltage_mode": "all_nodes",
     "related_pin_only": false,
-    "sampling": "full",
+    "sampling": "10pct",
     "lr": 0.0001,
     "wd": 0.005,
     "batch_size": 5,
