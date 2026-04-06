@@ -7,7 +7,7 @@
     "voltage_mode": "all_nodes",
     "meta_lr": 0.0001,
     "innerdiv": 100,
-    "total_iterations": 200000,
+    "total_iterations": 300000,
     "chunk_size": 10000,
     "K": 5,
     "tasks_per_meta_batch": 32,
@@ -16,7 +16,7 @@
     "pooling": "mean",
     "inputport": false,
     "related_pin_only": false,
-    "sampling": "full"
+    "sampling": "xor_10pct"
     },
   "sweep_params": {
     "conv_hidden_dim": [64],
