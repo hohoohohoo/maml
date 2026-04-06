@@ -7,7 +7,7 @@
     "voltage_mode": "all_nodes",
     "meta_lr": 0.0001,
     "innerdiv": 100,
-    "total_iterations": 100000,
+    "total_iterations": 200000,
     "chunk_size": 10000,
     "K": 5,
     "tasks_per_meta_batch": 32,
@@ -25,7 +25,7 @@
     "num_fc_layers": [2]
   },
   "resume_config": {
-    "auto_resume": false,
+    "auto_resume": true,
     "additional_iterations": null
   },
   "_comments": {
