@@ -6,7 +6,7 @@
   "learning_rate": 0.0001,
   "model_type": "aadam",
   "loss_logging": {
-    "enabled": false,
+    "enabled": true,
     "log_every": 1000,
     "save_dir": null
   }
