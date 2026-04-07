@@ -2,7 +2,7 @@
   "experiment_name": "mlp_single",
   "base_config": {
     "dataset_config": 0,
-    "data_type": "cell",
+    "data_type": "transition",
     "gpu_id": "0",
     "num_iterations": 300000
   },
