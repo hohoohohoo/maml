@@ -1,7 +1,7 @@
 {
   "experiment_name": "mlp_single",
   "base_config": {
-    "dataset_config": 0,
+    "dataset_config": 1,
     "data_type": "cell",
     "gpu_id": "0",
     "num_iterations": 300000
@@ -14,7 +14,7 @@
   ],
   "loss_logging": {
     "enabled": true,
-    "log_every": 1000,
+    "log_every": 100,
     "save_dir": null
   }
 }
