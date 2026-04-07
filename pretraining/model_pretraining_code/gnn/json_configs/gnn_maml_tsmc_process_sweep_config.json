@@ -4,7 +4,6 @@
   "base_config": {
     "data_type": "transition",
     "graph_mode": "full_graph",
-    "cache_path": "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical.pth",
     "voltage_mode": "vdd_only",
     "temp_mode": "typical",
     "inputport": false,
