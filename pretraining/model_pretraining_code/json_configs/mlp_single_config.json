@@ -1,9 +1,9 @@
 {
   "experiment_name": "mlp_single",
   "base_config": {
-    "dataset_config": 2,
+    "dataset_config": 3,
     "data_type": "cell",
-    "gpu_id": "1",
+    "gpu_id": "3",
     "num_iterations": 300000
   },
   "fixed_experiments": [
