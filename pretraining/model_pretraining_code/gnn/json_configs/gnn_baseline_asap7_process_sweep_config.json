@@ -5,7 +5,7 @@
     "data_type": "transition",
     "graph_mode": "full_graph",
     "pooling": "mean",
-    "voltage_mode": "all_nodes",
+    "voltage_mode": "vdd_only",
     "related_pin_only": true,
     "sampling": "10pct",
     "lr": 0.0001,
