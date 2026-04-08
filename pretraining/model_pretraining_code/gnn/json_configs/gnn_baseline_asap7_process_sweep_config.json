@@ -3,10 +3,10 @@
   "description": "ASAP7 Process GNN Baseline architecture sweep (11D node features: 7 base + 4 process params)",
   "base_config": {
     "data_type": "transition",
-    "graph_mode": "stage_aware",
-    "pooling": "output",
+    "graph_mode": "full_graph",
+    "pooling": "mean",
     "voltage_mode": "all_nodes",
-    "related_pin_only": false,
+    "related_pin_only": true,
     "sampling": "10pct",
     "lr": 0.0001,
     "wd": 0.005,
