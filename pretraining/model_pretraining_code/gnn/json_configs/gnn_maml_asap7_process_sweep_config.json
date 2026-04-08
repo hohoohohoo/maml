@@ -16,7 +16,7 @@
     "pooling": "mean",
     "inputport": false,
     "related_pin_only": false,
-    "sampling": "_full"
+    "sampling": "full"
     },
   "sweep_params": {
     "conv_hidden_dim": [64],
