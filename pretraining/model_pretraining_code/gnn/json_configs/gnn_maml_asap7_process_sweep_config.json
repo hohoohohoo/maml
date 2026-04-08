@@ -2,7 +2,7 @@
   "experiment_name": "gnn_maml_asap7_process_sweep",
   "description": "ASAP7 Process GNN MAML architecture sweep (11D node features: 7 base + 4 process params)",
   "base_config": {
-    "data_type": "transition",
+    "data_type": "cell",
     "graph_mode": "full_graph",
     "voltage_mode": "vdd_only",
     "meta_lr": 0.0001,
