@@ -5,7 +5,6 @@
     "data_type": "cell",
     "gpu": "3",
     "num_iterations": 300000,
-    "layer_length": 40,
     "inner": 1,
     "meta": 32,
     "auto_resume": false
