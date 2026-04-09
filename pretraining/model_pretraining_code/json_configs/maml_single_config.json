@@ -3,7 +3,7 @@
   "base_config": {
     "dataset_config": 3,
     "data_type": "cell",
-    "gpu": "3",
+    "gpu": "6",
     "num_iterations": 300000,
     "inner": 1,
     "meta": 32,
