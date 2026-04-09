@@ -1,14 +1,18 @@
 {
-  "dataset_config": 3,
-  "data_type": "cell",
-  "gpu": "3",
-  "num_iterations": 300000,
-  "layer_length": 40,
-  "inner": 1,
-  "innerdiv": 100,
-  "meta": 32,
-  "resume": null,
-  "auto_resume": false,
+  "experiment_name": "maml_single_run",
+  "base_config": {
+    "dataset_config": 3,
+    "data_type": "cell",
+    "gpu": "3",
+    "num_iterations": 300000,
+    "layer_length": 40,
+    "inner": 1,
+    "meta": 32,
+    "auto_resume": false
+  },
+  "sweep_params": {
+    "innerdiv": [100]
+  },
   "loss_logging": {
     "enabled": false,
     "log_every": 100,
