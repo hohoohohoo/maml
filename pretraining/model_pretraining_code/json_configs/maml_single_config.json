@@ -10,7 +10,7 @@
   "resume": null,
   "auto_resume": false,
   "loss_logging": {
-    "enabled": true,
+    "enabled": false,
     "log_every": 100,
     "save_dir": null
   }
