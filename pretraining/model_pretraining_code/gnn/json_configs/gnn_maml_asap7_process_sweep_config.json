@@ -15,7 +15,7 @@
     "gpu": 4,
     "pooling": "mean",
     "inputport": false,
-    "related_pin_only": false,
+    "related_pin_only": true,
     "sampling": "10pct"
     },
   "sweep_params": {
