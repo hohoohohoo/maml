@@ -14,7 +14,7 @@ Key differences from ASAP7 version:
 from dataclasses import dataclass
 from typing import List, Set, Tuple, Optional, Dict
 import re
-from spi_parser import SPIParser
+from .spi_parser import SPIParser
 
 
 @dataclass

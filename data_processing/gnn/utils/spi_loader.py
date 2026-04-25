@@ -22,7 +22,7 @@ Usage:
     loader.merge_spi('file2.spi')
 """
 
-from spi_parser import SPIParser
+from .spi_parser import SPIParser
 
 
 class SPILoader:

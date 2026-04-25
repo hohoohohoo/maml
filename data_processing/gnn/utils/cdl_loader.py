@@ -24,7 +24,7 @@ Usage:
     loader.merge_cdl('file3.cdl')
 """
 
-from cdl_parser import CDLParser
+from .cdl_parser import CDLParser
 
 
 class CDLLoader:

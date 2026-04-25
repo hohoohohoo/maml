@@ -24,7 +24,7 @@ import sys
 
 sys.path.append('/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn')
 
-from cdl_loader import CDLLoader
+from utils.cdl_loader import CDLLoader
 
 
 def create_full_graph_edges_asap7(cell, all_nodes):
@@ -128,7 +128,7 @@ def precompute_cell_topology_asap7(cdl_path: str, output_path: str, logic_keywor
         logic_keywords = [
             'AND', 'NAND', 'OR', 'NOR', 'XOR', 'XNOR',
             'INV', 'BUF', 'MUX', 'AO', 'OA', 'AOI', 'OAI',
-            'MAJ', 'FA', 'HA','MAJI'
+            'MAJ', 'FA', 'HA','MAJI' , 'A2O1', 'O2A1'
         ]
 
     print("=" * 80)
@@ -304,7 +304,7 @@ def precompute_cell_topology_asap7(cdl_path: str, output_path: str, logic_keywor
     return cell_topology_cache
 
 
-def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keywords=None):
+def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keywords=None, weighted=False):
     """
     TSMC SPI 파일에서 logic cell들의 topology를 미리 계산하여 저장
     결과 형식은 CDL 버전과 동일
@@ -313,8 +313,9 @@ def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keyword
         spi_path: TSMC SPI 파일 경로
         output_path: 출력 캐시 파일 경로 (.pth)
         logic_keywords: Logic cell을 구분하는 키워드 리스트 (기본값 사용 가능)
+        weighted: True면 저항값 기반 weighted adjacency matrix 생성 (TSMC only)
     """
-    from spi_loader import SPILoader
+    from utils.spi_loader import SPILoader
 
     if logic_keywords is None:
         # TSMC cell naming conventions
@@ -330,6 +331,7 @@ def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keyword
     print(f"SPI file: {spi_path}")
     print(f"Output cache: {output_path}")
     print(f"Logic keywords: {logic_keywords}")
+    print(f"Weighted adjacency: {weighted}")
     print("=" * 80)
 
     # Load SPI file
@@ -415,23 +417,52 @@ def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keyword
         print(f"   Output nodes: {output_nodes}")
         print(f"   Input nodes: {external_inputs}")
 
+        # Build resistance and capacitance maps if weighted mode
+        resistance_map = None
+        node_capacitance_map = None
+        if weighted:
+            resistance_map = build_resistance_map_tsmc(spi_cell)
+            node_capacitance_map = build_node_capacitance_map_tsmc(spi_cell)
+            print(f"   Built resistance map: {len(resistance_map) // 2} unique connections")
+            print(f"   Built capacitance map: {len(node_capacitance_map)} nodes")
+
         # Create edges from TSMC SPI connectivity
-        edges, edge_attrs = create_full_graph_edges_tsmc(
-            spi_cell, connectivity, all_nodes, transistor_name_map
-        )
+        if weighted:
+            edges, edge_attrs, edge_weights = create_full_graph_edges_tsmc(
+                spi_cell, connectivity, all_nodes, transistor_name_map,
+                weighted=True, resistance_map=resistance_map
+            )
+        else:
+            edges, edge_attrs = create_full_graph_edges_tsmc(
+                spi_cell, connectivity, all_nodes, transistor_name_map
+            )
+            edge_weights = None
 
         # Convert to tensor format
         edge_index_tensor = torch.tensor(edges, dtype=torch.int64).T if edges else torch.zeros(2, 0, dtype=torch.int64)
         edge_attr_tensor = torch.tensor(edge_attrs, dtype=torch.float32) if edge_attrs else torch.zeros(0, 3, dtype=torch.float32)
 
-        # Pre-compute adjacency matrix
+        # Pre-compute adjacency matrix (always binary: 0 or 1)
         num_nodes = len(all_nodes)
         adjacency_matrix = torch.zeros(num_nodes, num_nodes, dtype=torch.float32)
+
         if edges:
             for i in range(edge_index_tensor.shape[1]):
                 src = edge_index_tensor[0][i]
                 dst = edge_index_tensor[1][i]
                 adjacency_matrix[src][dst] = 1.0
+
+        if weighted and edges and edge_weights:
+            # Weighted adjacency matrix using resistance values (separate from binary)
+            weighted_adjacency_matrix = torch.zeros(num_nodes, num_nodes, dtype=torch.float32)
+            for i, (edge, weight) in enumerate(zip(edges, edge_weights)):
+                src, dst = edge
+                weighted_adjacency_matrix[src][dst] = weight
+
+            non_zero_r = [w for w in edge_weights if w > 0]
+            print(f"   Raw resistance range: min={min(non_zero_r):.4f}, max={max(non_zero_r):.4f}")
+        else:
+            weighted_adjacency_matrix = None
 
         # Get transistor information (normalized names)
         # IMPORTANT: NMOS = 1.0, PMOS = -1.0 (same as CDL version)
@@ -464,7 +495,7 @@ def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keyword
             }
 
         # Store topology cache
-        cell_topology_cache[cell_name] = {
+        cache_entry = {
             'all_nodes': all_nodes,
             'external_inputs': external_inputs,
             'power_nodes': power_nodes,
@@ -479,7 +510,27 @@ def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keyword
             'num_edges': len(edges)
         }
 
-        print(f"   ✓ Cached: {len(all_nodes)} nodes, {len(edges)} edges, adjacency_matrix: {adjacency_matrix.shape}")
+        # Add weighted adjacency matrix and node capacitance if available
+        # Apply per-cell normalization
+        if weighted_adjacency_matrix is not None:
+            normalized_adj = normalize_adjacency_weights_per_cell(weighted_adjacency_matrix)
+            cache_entry['weighted_adjacency_matrix'] = normalized_adj
+            non_zero = normalized_adj[normalized_adj != 0]
+            if len(non_zero) > 0:
+                print(f"   Normalized adj: mean={non_zero.mean():.4f}, std={non_zero.std():.4f}")
+
+        if node_capacitance_map is not None:
+            normalized_cap = normalize_capacitance_per_cell(node_capacitance_map)
+            cache_entry['node_capacitance'] = normalized_cap
+            cap_vals = [v for v in normalized_cap.values() if v != 0]
+            if cap_vals:
+                import numpy as np
+                print(f"   Normalized cap: mean={np.mean(cap_vals):.4f}, std={np.std(cap_vals):.4f}")
+
+        cell_topology_cache[cell_name] = cache_entry
+
+        weighted_str = ", weighted_adj=✓" if weighted_adjacency_matrix is not None else ""
+        print(f"   ✓ Cached: {len(all_nodes)} nodes, {len(edges)} edges{weighted_str}")
 
     # Save cache
     print(f"\n💾 Saving topology cache...")
@@ -489,13 +540,6 @@ def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keyword
 
     print(f"   ✓ Saved to: {output_path}")
 
-    # Print summary
-    print("\n" + "=" * 80)
-    print("SUMMARY")
-    print("=" * 80)
-    for cell_name, cache in cell_topology_cache.items():
-        print(f"  {cell_name:30s}: {cache['num_nodes']:3d} nodes, {cache['num_edges']:4d} edges")
-
     print("=" * 80)
     print("✅ Pre-computation complete!")
     print("=" * 80)
@@ -503,7 +547,163 @@ def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keyword
     return cell_topology_cache
 
 
-def create_full_graph_edges_tsmc(spi_cell, connectivity, all_nodes, transistor_name_map):
+def build_resistance_map_tsmc(spi_cell):
+    """
+    TSMC SPI cell에서 저항값 맵 생성.
+
+    Args:
+        spi_cell: SPIParser의 LogicCell (resistors 정보 포함)
+
+    Returns:
+        dict: {(node1, node2): resistance_value, ...}
+              양방향 키 모두 저장 (node1, node2) 및 (node2, node1)
+    """
+    resistance_map = {}
+
+    for resistor in spi_cell.resistors:
+        node1, node2 = resistor.node1, resistor.node2
+        value = resistor.value
+
+        # 양방향으로 저장
+        resistance_map[(node1, node2)] = value
+        resistance_map[(node2, node1)] = value
+
+    return resistance_map
+
+
+def get_base_node_name(node_name):
+    """
+    노드 이름에서 기본 이름 추출 (variant suffix 제거).
+
+    예: VDD:1 -> VDD, N_7:2 -> N_7, A -> A
+
+    Args:
+        node_name: 원본 노드 이름
+
+    Returns:
+        기본 노드 이름 (colon suffix 제거)
+    """
+    if ':' in node_name:
+        parts = node_name.split(':')
+        # 마지막 부분이 숫자인 경우에만 variant로 처리
+        if parts[-1].isdigit():
+            return ':'.join(parts[:-1])
+    return node_name
+
+
+def build_node_capacitance_map_tsmc(spi_cell):
+    """
+    TSMC SPI cell에서 노드별 기생 캐패시턴스 합산 맵 생성.
+
+    각 노드에 연결된 모든 capacitor의 값을 합산.
+    Variant 노드 (예: VDD:1, VDD:2)의 capacitance는 기본 노드 (VDD)로 합산.
+
+    Args:
+        spi_cell: SPIParser의 LogicCell (capacitors 정보 포함)
+
+    Returns:
+        dict: {base_node_name: total_capacitance, ...}
+    """
+    node_cap_map = {}
+
+    for cap in spi_cell.capacitors:
+        node1, node2 = cap.node1, cap.node2
+        value = cap.value
+
+        # Variant 노드를 기본 노드로 변환 (VDD:1 -> VDD)
+        base_node1 = get_base_node_name(node1)
+        base_node2 = get_base_node_name(node2)
+
+        # 양쪽 노드에 모두 추가 (기본 노드 기준)
+        if base_node1 not in node_cap_map:
+            node_cap_map[base_node1] = 0.0
+        if base_node2 not in node_cap_map:
+            node_cap_map[base_node2] = 0.0
+
+        node_cap_map[base_node1] += value
+        node_cap_map[base_node2] += value
+
+    return node_cap_map
+
+
+def normalize_adjacency_weights_per_cell(adjacency_matrix):
+    """
+    Adjacency matrix의 non-zero 값들을 cell 단위 min-max로 정규화.
+
+    저항값에 대해 conductance (1/R)로 변환 후 [0.1, 1.0] 범위로 정규화.
+    (0은 연결이 없음을 의미하므로 유지)
+
+    Args:
+        adjacency_matrix: torch.Tensor [num_nodes, num_nodes] with raw resistance values
+
+    Returns:
+        normalized adjacency_matrix (values in [0.1, 1.0])
+    """
+    non_zero_mask = adjacency_matrix != 0
+    non_zero_values = adjacency_matrix[non_zero_mask]
+
+    if len(non_zero_values) == 0:
+        return adjacency_matrix
+
+    normalized = adjacency_matrix.clone()
+
+    # Convert to conductance (1/R) - 작은 저항 = 큰 conductance = 강한 연결
+    conductance = 1.0 / non_zero_values
+
+    # Per-cell min-max normalization to [0.1, 1.0]
+    min_val = conductance.min()
+    max_val = conductance.max()
+
+    if max_val > min_val:
+        normalized_values = 0.1 + 0.9 * (conductance - min_val) / (max_val - min_val)
+    else:
+        normalized_values = torch.ones_like(conductance)  # All same value -> 1.0
+
+    normalized[non_zero_mask] = normalized_values
+
+    return normalized
+
+
+def normalize_capacitance_per_cell(node_capacitance_map):
+    """
+    Node capacitance를 cell 단위 min-max로 정규화.
+
+    [0, 1] 범위로 정규화 (0인 노드는 0 유지)
+
+    Args:
+        node_capacitance_map: dict {node_name: capacitance_value}
+
+    Returns:
+        Normalized capacitance map (values in [0, 1])
+    """
+    import numpy as np
+    CAP_SCALE = 1e18
+
+    # Scale and collect non-zero values
+    scaled_values = {node: cap * CAP_SCALE for node, cap in node_capacitance_map.items()}
+    non_zero_vals = [v for v in scaled_values.values() if v > 0]
+
+    if not non_zero_vals:
+        return scaled_values
+
+    # Per-cell min-max normalization to [0, 1]
+    min_val = min(non_zero_vals)
+    max_val = max(non_zero_vals)
+
+    normalized_map = {}
+    for node, scaled_cap in scaled_values.items():
+        if scaled_cap <= 0:
+            normalized_map[node] = 0.0
+        elif max_val > min_val:
+            normalized_map[node] = (scaled_cap - min_val) / (max_val - min_val)
+        else:
+            normalized_map[node] = 1.0  # All same value
+
+    return normalized_map
+
+
+def create_full_graph_edges_tsmc(spi_cell, connectivity, all_nodes, transistor_name_map,
+                                  weighted=False, resistance_map=None):
     """
     TSMC SPI cell에 대한 full graph edges 생성
 
@@ -515,25 +715,108 @@ def create_full_graph_edges_tsmc(spi_cell, connectivity, all_nodes, transistor_n
         connectivity: get_transistor_connectivity() 결과
         all_nodes: 모든 노드 리스트
         transistor_name_map: XMx -> MMy 매핑
+        weighted: True면 저항값을 weight로 사용
+        resistance_map: 저항값 맵 (weighted=True일 때 필요)
 
     Returns:
         edges: [[src, dst], ...]
         edge_attrs: [[1,0,0], ...]
+        edge_weights: [weight, ...] (weighted=True일 때만)
     """
     edges = []
     edge_attrs = []
+    edge_weights = []  # 저항값 기반 weights
 
     # Node index mapping
     node_to_idx = {node: idx for idx, node in enumerate(all_nodes)}
 
-    print(f"   🔗 Creating full graph edges (TSMC SPI):")
+    print(f"   🔗 Creating full graph edges (TSMC SPI, weighted={weighted}):")
 
     # Track connections via intermediate nodes
-    net_connections = {}  # net -> [connected transistors/nodes]
+    net_connections = {}  # net -> [(transistor_name, terminal_node)]
+
+    # Helper function to find resistance between nodes
+    def find_resistance(node1, node2):
+        """
+        Find resistance value between two nodes via resistance_map.
+        Also handles N_x:y variant lookups when base net is provided.
+        """
+        if resistance_map is None:
+            return 1.0
+        # Direct lookup
+        if (node1, node2) in resistance_map:
+            return resistance_map[(node1, node2)]
+
+        # Try N_x:y variant lookups if one node is a base net (e.g., N_7)
+        # Look for connections like (M1:DRN, N_7:1) when searching for (M1:DRN, N_7)
+        for (n1, n2), value in resistance_map.items():
+            # Check if n1 matches node1 and n2 is a variant of node2
+            if n1 == node1 and ':' in n2:
+                parts = n2.split(':')
+                if parts[0] == node2 and parts[1].isdigit():
+                    return value
+            # Check if n2 matches node1 and n1 is a variant of node2
+            if n2 == node1 and ':' in n1:
+                parts = n1.split(':')
+                if parts[0] == node2 and parts[1].isdigit():
+                    return value
+            # Reverse: n1 matches node2, n2 is a variant of node1
+            if n1 == node2 and ':' in n2:
+                parts = n2.split(':')
+                if parts[0] == node1 and parts[1].isdigit():
+                    return value
+            if n2 == node2 and ':' in n1:
+                parts = n1.split(':')
+                if parts[0] == node1 and parts[1].isdigit():
+                    return value
+
+        return 1.0  # Default if not found
+
+    def get_internal_series_resistance(base_net):
+        """
+        Calculate total internal series resistance for parasitic RC nodes.
+
+        For nodes like N_7:1 -> N_7:2 -> N_7:3, sum up the resistances
+        between consecutive nodes in the same series.
+
+        Args:
+            base_net: Base net name (e.g., "N_7")
+
+        Returns:
+            Total internal series resistance (0.0 if no internal resistors found)
+        """
+        if resistance_map is None:
+            return 0.0
+
+        # Find all N_x:y nodes belonging to this base net
+        series_nodes = set()
+        for (n1, n2) in resistance_map.keys():
+            # Check if node belongs to this base net series
+            for node in [n1, n2]:
+                if ':' in node:
+                    parts = node.split(':')
+                    if parts[0] == base_net and parts[1].isdigit():
+                        series_nodes.add(node)
+
+        if len(series_nodes) < 2:
+            return 0.0
+
+        # Sum up resistances between nodes in the same series
+        internal_resistance = 0.0
+        series_list = list(series_nodes)
+
+        for i in range(len(series_list)):
+            for j in range(i + 1, len(series_list)):
+                n1, n2 = series_list[i], series_list[j]
+                if (n1, n2) in resistance_map:
+                    internal_resistance += resistance_map[(n1, n2)]
+
+        return internal_resistance
 
     for trans in spi_cell.transistors:
         trans_name = trans.name
         normalized_name = transistor_name_map.get(trans_name)
+        mos_name = trans_name.replace('X', '')  # XM1 -> M1
 
         if normalized_name not in node_to_idx:
             continue
@@ -546,6 +829,8 @@ def create_full_graph_edges_tsmc(spi_cell, connectivity, all_nodes, transistor_n
         # Process each terminal type
         for terminal_type in ['gate', 'source', 'drain']:
             connected_nodes = conn.get(terminal_type, set())
+            terminal_suffix = {'gate': 'GATE', 'source': 'SRC', 'drain': 'DRN'}[terminal_type]
+            mos_terminal = f"{mos_name}:{terminal_suffix}"
 
             for node in connected_nodes:
                 # Skip internal M:XXX nodes
@@ -554,54 +839,75 @@ def create_full_graph_edges_tsmc(spi_cell, connectivity, all_nodes, transistor_n
 
                 # Skip intermediate nodes (N_xx)
                 if node.startswith('N_'):
-                    # Track for transistor-transistor connections
+                    # Track for transistor-transistor connections with terminal info
                     if node not in net_connections:
                         net_connections[node] = []
-                    net_connections[node].append(normalized_name)
+                    net_connections[node].append((normalized_name, mos_terminal, node))
                     continue
 
                 # Direct connection to external node
                 if node in node_to_idx:
                     terminal_idx = node_to_idx[node]
 
+                    # Find resistance weight
+                    weight = find_resistance(mos_terminal, node) if weighted else 1.0
+
                     # Bidirectional edge
                     edges.append([trans_idx, terminal_idx])
                     edge_attrs.append([1.0, 0.0, 0.0])
+                    edge_weights.append(weight)
                     edges.append([terminal_idx, trans_idx])
                     edge_attrs.append([1.0, 0.0, 0.0])
+                    edge_weights.append(weight)
 
     # Connect transistors via intermediate nets (N_xx nodes)
-    for net, connected_trans in net_connections.items():
-        if len(connected_trans) >= 2:
-            print(f"      Via {net}: connecting {connected_trans}")
-            for i in range(len(connected_trans)):
-                for j in range(i + 1, len(connected_trans)):
-                    trans1 = connected_trans[i]
-                    trans2 = connected_trans[j]
+    for net, connected_trans_list in net_connections.items():
+        if len(connected_trans_list) >= 2:
+            print(f"      Via {net}: connecting {[t[0] for t in connected_trans_list]}")
+            for i in range(len(connected_trans_list)):
+                for j in range(i + 1, len(connected_trans_list)):
+                    trans1, term1, _ = connected_trans_list[i]
+                    trans2, term2, _ = connected_trans_list[j]
 
                     if trans1 in node_to_idx and trans2 in node_to_idx:
                         idx1 = node_to_idx[trans1]
                         idx2 = node_to_idx[trans2]
 
+                        # Calculate weight as sum of resistances via intermediate net
+                        if weighted:
+                            r1 = find_resistance(term1, net)
+                            r2 = find_resistance(net, term2)
+                            # Add internal series resistance (N_7:1 -> N_7:2 -> N_7:3)
+                            r_internal = get_internal_series_resistance(net)
+                            weight = r1 + r_internal + r2  # Total series resistance
+                        else:
+                            weight = 1.0
+
                         # Bidirectional edge
                         edges.append([idx1, idx2])
                         edge_attrs.append([1.0, 0.0, 0.0])
+                        edge_weights.append(weight)
                         edges.append([idx2, idx1])
                         edge_attrs.append([1.0, 0.0, 0.0])
+                        edge_weights.append(weight)
 
-    # Remove duplicate edges
+    # Remove duplicate edges (keep first occurrence's weight)
     unique_edges = []
     unique_attrs = []
+    unique_weights = []
     seen = set()
-    for edge, attr in zip(edges, edge_attrs):
+    for edge, attr, weight in zip(edges, edge_attrs, edge_weights):
         key = (edge[0], edge[1])
         if key not in seen:
             seen.add(key)
             unique_edges.append(edge)
             unique_attrs.append(attr)
+            unique_weights.append(weight)
 
     print(f"      📊 Total edges: {len(unique_edges)} (deduplicated from {len(edges)})")
 
+    if weighted:
+        return unique_edges, unique_attrs, unique_weights
     return unique_edges, unique_attrs
 
 
@@ -620,7 +926,8 @@ def load_cell_topology_cache(cache_path: str):
 
 def apply_topology_to_sample(topology_cache, cell_name: str, voltage: float,
                              input_slew: float, output_load: float, output_value: float,
-                             input_port_names: list = None):
+                             input_port_names: list = None, voltage_mode: str = 'all_nodes',
+                             slew_mode: str = 'all', related_pin: str = None):
     """
     Apply voltage/slew/load to pre-computed topology to create a graph sample
 
@@ -632,6 +939,11 @@ def apply_topology_to_sample(topology_cache, cell_name: str, voltage: float,
         output_load: Output load
         output_value: Output timing value (delay or transition)
         input_port_names: List of input port names (optional, for validation)
+        voltage_mode: 'all_nodes' (default) - voltage applied to all nodes
+                      'vdd_only' - voltage only on VDD node, 0 for others
+        slew_mode: 'all' (default) - input_slew applied to all input ports
+                   'related_pin_only' - input_slew only applied to related_pin
+        related_pin: The specific input pin for slew assignment (used when slew_mode='related_pin_only')
 
     Returns:
         dict: Graph sample ready for GNN training
@@ -666,16 +978,25 @@ def apply_topology_to_sample(topology_cache, cell_name: str, voltage: float,
         # Check if node is a transistor (use transistor_nodes list for robustness)
         is_transistor = node in transistor_nodes or node in transistor_info
 
+        # Determine voltage value based on voltage_mode
+        if voltage_mode == 'vdd_only':
+            node_voltage = voltage if node == 'VDD' else 0.0
+        elif voltage_mode == 'vdd_mos':
+            # Apply voltage to VDD and MOS transistor nodes only
+            node_voltage = voltage if (node == 'VDD' or is_transistor) else 0.0
+        else:  # 'all_nodes' (default)
+            node_voltage = voltage
+
         if is_transistor:
             if node in transistor_info:
                 info = transistor_info[node]
                 # Transistor: [0, 0, trans_type, width, voltage, 0, 0]
                 # Match transform_sample_MAML_stage_aware.py line 218
-                node_features.append([0.0, 0.0, info['type'], info['width'], voltage, 0.0, 0.0])
+                node_features.append([0.0, 0.0, info['type'], info['width'], node_voltage, 0.0, 0.0])
                 transistor_node_list.append(node)
             else:
                 # Fallback (should not happen)
-                node_features.append([0.0, 0.0, -1.0, 0.1, voltage, 0.0, 0.0])
+                node_features.append([0.0, 0.0, -1.0, 0.1, node_voltage, 0.0, 0.0])
                 transistor_node_list.append(node)
 
         else:  # Circuit node
@@ -684,16 +1005,23 @@ def apply_topology_to_sample(topology_cache, cell_name: str, voltage: float,
             if node in ['VDD', 'VSS']:
                 # Power rails: [1, 0, 0, 0, voltage, 0, 0]
                 # Match transform_sample_MAML_stage_aware.py line 230
-                node_features.append([1.0, 0.0, 0.0, 0.0, voltage, 0.0, 0.0])
+                node_features.append([1.0, 0.0, 0.0, 0.0, node_voltage, 0.0, 0.0])
             elif node in output_nodes:
                 # Output port: [0, 1, 0, 0, voltage, 0, output_load]
                 # Match transform_sample_MAML_stage_aware.py line 234
                 # Handles standard Y output and non-standard outputs like CON, SN (FA/HA cells)
-                node_features.append([0.0, 1.0, 0.0, 0.0, voltage, 0.0, output_load])
+                node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, 0.0, output_load])
             elif node in external_inputs:
                 # Input port: [0, 1, 0, 0, voltage, input_slew, 0]
                 # Match transform_sample_MAML_stage_aware.py line 237
-                node_features.append([0.0, 1.0, 0.0, 0.0, voltage, input_slew, 0.0])
+                # Apply slew based on slew_mode
+                if slew_mode == 'related_pin_only' and related_pin is not None:
+                    # Only apply input_slew to the related_pin, others get 0
+                    node_slew = input_slew if node == related_pin else 0.0
+                else:
+                    # Default: apply input_slew to all input ports
+                    node_slew = input_slew
+                node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, node_slew, 0.0])
             else:
                 # Intermediate gate node (should not happen in full_graph mode normally)
                 # 해당 gate로 제어되는 모든 transistor의 width 합을 사용
@@ -704,7 +1032,7 @@ def apply_topology_to_sample(topology_cache, cell_name: str, voltage: float,
                         gate_width_sum += trans_info['width']
 
                 # Intermediate node: [0, 1, 0, gate_width_sum, voltage, 0, 0]
-                node_features.append([0.0, 1.0, 0.0, gate_width_sum, voltage, 0.0, 0.0])
+                node_features.append([0.0, 1.0, 0.0, gate_width_sum, node_voltage, 0.0, 0.0])
 
     # Convert to tensors
     node_features_tensor = torch.tensor(node_features, dtype=torch.float32)
@@ -743,7 +1071,11 @@ Examples:
   # TSMC SPI file
   python precompute_cell_topology.py --spi_path /path/to/tsmc.spi --output cache_tsmc.pth
 
+  # TSMC SPI with weighted adjacency (uses resistance values)
+  python precompute_cell_topology.py --spi_path /path/to/tsmc.spi --output cache_tsmc_weighted.pth --weighted
+
 Note: Specify either --cdl_path (ASAP7) or --spi_path (TSMC), not both.
+      --weighted option only works with TSMC SPI files (ASAP7 CDL has no resistance info).
 """
     )
     parser.add_argument("--cdl_path", type=str, default=None,
@@ -756,6 +1088,8 @@ Note: Specify either --cdl_path (ASAP7) or --spi_path (TSMC), not both.
     parser.add_argument("--logic_keywords", type=str, nargs='+',
                        default=None,
                        help="Logic cell keywords (default: AND, NAND, OR, etc.)")
+    parser.add_argument("--weighted", action="store_true",
+                       help="Use resistance-based weighted adjacency matrix (TSMC SPI only)")
 
     args = parser.parse_args()
 
@@ -763,10 +1097,11 @@ Note: Specify either --cdl_path (ASAP7) or --spi_path (TSMC), not both.
     if args.spi_path:
         # TSMC SPI file
         if args.output is None:
-            args.output = "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/cell_topology_cache_tsmc.pth"
+            suffix = "_weighted" if args.weighted else ""
+            args.output = f"/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/cell_topology_cache_tsmc{suffix}.pth"
 
         print("🔧 Processing TSMC SPI file...")
-        precompute_cell_topology_tsmc(args.spi_path, args.output, args.logic_keywords)
+        precompute_cell_topology_tsmc(args.spi_path, args.output, args.logic_keywords, weighted=args.weighted)
 
     elif args.cdl_path:
         # ASAP7 CDL file

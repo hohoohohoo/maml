@@ -26,7 +26,8 @@ from collections import namedtuple
 # Data structures for parsed SPI data
 Transistor = namedtuple('Transistor', ['name', 'drain', 'gate', 'source', 'bulk', 'type', 'width', 'length'])
 Resistor = namedtuple('Resistor', ['name', 'node1', 'node2', 'value'])
-LogicCell = namedtuple('LogicCell', ['name', 'ports', 'transistors', 'resistors', 'connections'])
+Capacitor = namedtuple('Capacitor', ['name', 'node1', 'node2', 'value'])
+LogicCell = namedtuple('LogicCell', ['name', 'ports', 'transistors', 'resistors', 'capacitors', 'connections'])
 
 
 class SPIParser:
@@ -67,10 +68,11 @@ class SPIParser:
             if not self._is_logic_cell(cell_name):
                 continue
 
-            # Parse ports, transistors, and resistors
+            # Parse ports, transistors, resistors, and capacitors
             ports = ports_str.strip().split()
             transistors = self._parse_transistors(body)
             resistors = self._parse_resistors(body)
+            capacitors = self._parse_capacitors(body)
 
             # Build connection map from resistors
             connections = self._build_connections(resistors)
@@ -81,6 +83,7 @@ class SPIParser:
                 ports=ports,
                 transistors=transistors,
                 resistors=resistors,
+                capacitors=capacitors,
                 connections=connections
             )
 
@@ -104,7 +107,7 @@ class SPIParser:
             'AOI', 'OAI', 'AO', 'OA',
             'CKND', 'CKAN', 'CKNR',  # Clock cells
             'DEL',  # Delay cells
-            'DFCNQD', 'SDFSNQD',  # Flip-flop cells
+            'DFCNQD', 'SDFSNQD', 'SDFCSNQD',  # Flip-flop cells
         ]
 
         # Complex AO/OA patterns with regex
@@ -236,6 +239,54 @@ class SPIParser:
 
         return resistors
 
+    def _parse_capacitors(self, circuit_body):
+        """
+        Parse capacitor definitions from subcircuit body.
+
+        TSMC SPI Capacitor format:
+        C10 A2 M3:BULK 6.66062e-19
+        C100 A1 VDD 8.79407e-18
+
+        Capacitors define parasitic capacitance between nodes.
+
+        Args:
+            circuit_body: Text body of subcircuit definition
+
+        Returns:
+            List of Capacitor namedtuples
+        """
+        capacitors = []
+
+        # Pattern: Cx node1 node2 value
+        # Nodes can be: A2, M3:BULK, VDD, VSS, N_3, etc.
+        cap_pattern = r'^(C\d+)\s+(\S+)\s+(\S+)\s+([\d.eE+-]+)'
+
+        for line in circuit_body.split('\n'):
+            line = line.strip()
+
+            # Skip empty lines, comments, and directives
+            if not line or line.startswith('.') or line.startswith('*'):
+                continue
+
+            match = re.match(cap_pattern, line)
+            if match:
+                name = match.group(1)
+                node1 = match.group(2)
+                node2 = match.group(3)
+                value = float(match.group(4))
+
+                capacitors.append(Capacitor(
+                    name=name,
+                    node1=node1,
+                    node2=node2,
+                    value=value
+                ))
+
+        if self.verbose:
+            print(f"      Found {len(capacitors)} capacitors")
+
+        return capacitors
+
     def _build_connections(self, resistors):
         """
         Build connection map from resistor information.
@@ -344,6 +395,12 @@ class SPIParser:
         if len(cell.resistors) > 10:
             info.append(f"  ... and {len(cell.resistors) - 10} more")
 
+        info.append(f"\nCapacitors ({len(cell.capacitors)}):")
+        for c in cell.capacitors[:10]:  # Show first 10
+            info.append(f"  {c.name}: {c.node1} -- {c.node2} ({c.value:.2e}F)")
+        if len(cell.capacitors) > 10:
+            info.append(f"  ... and {len(cell.capacitors) - 10} more")
+
         info.append(f"\nConnection nodes: {len(cell.connections)}")
 
         return '\n'.join(info)
@@ -413,6 +470,61 @@ class SPIParser:
                         queue.append(neighbor)
 
         return visited
+
+    def get_node_capacitance(self, cell_name):
+        """
+        Get total parasitic capacitance connected to each node.
+
+        For each node, sums all capacitors that have this node as one endpoint.
+
+        Args:
+            cell_name: Name of the cell
+
+        Returns:
+            dict: {node_name: total_capacitance} for all nodes
+        """
+        if cell_name not in self.logic_cells:
+            return {}
+
+        cell = self.logic_cells[cell_name]
+        node_capacitance = {}
+
+        for cap in cell.capacitors:
+            # Add capacitance to both endpoints
+            if cap.node1 not in node_capacitance:
+                node_capacitance[cap.node1] = 0.0
+            if cap.node2 not in node_capacitance:
+                node_capacitance[cap.node2] = 0.0
+
+            node_capacitance[cap.node1] += cap.value
+            node_capacitance[cap.node2] += cap.value
+
+        return node_capacitance
+
+    def build_capacitance_map(self, cell_name):
+        """
+        Build capacitance map for edges between nodes.
+
+        Returns capacitance value for each pair of connected nodes.
+
+        Args:
+            cell_name: Name of the cell
+
+        Returns:
+            dict: {(node1, node2): capacitance} - bidirectional keys
+        """
+        if cell_name not in self.logic_cells:
+            return {}
+
+        cell = self.logic_cells[cell_name]
+        cap_map = {}
+
+        for cap in cell.capacitors:
+            # Store bidirectionally
+            cap_map[(cap.node1, cap.node2)] = cap.value
+            cap_map[(cap.node2, cap.node1)] = cap.value
+
+        return cap_map
 
 
 def main():
