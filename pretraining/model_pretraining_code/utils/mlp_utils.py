@@ -26,7 +26,7 @@ def normalize_features(data_input, normalize_indices=[7, 8, 3, 4], num_features=
     Normalize specified input features using z-score normalization with validation.
 
     Args:
-        data_input: Input tensor of shape [tasks, samples, features]
+        data_input: Input tensor of shape [tasks, samples, features] (3D) or [tasks, features] (2D)
         normalize_indices: List of feature indices to normalize (default: [7,8,3,4])
         num_features: Total number of features (default: 9)
         feature_names: List of feature names for logging (default: ['slew', 'load_cap', 'temperature', 'voltage'])
@@ -41,17 +41,29 @@ def normalize_features(data_input, normalize_indices=[7, 8, 3, 4], num_features=
     feature_means = [None] * num_features
     feature_stds = [None] * num_features
 
+    # Handle both 2D and 3D tensors
+    is_3d = data_input.dim() == 3
+
     for feature_idx, feature_name in zip(normalize_indices, feature_names):
-        feature_mean = data_input[:, :, feature_idx].mean()
-        feature_std = data_input[:, :, feature_idx].std()
+        if is_3d:
+            feature_mean = data_input[:, :, feature_idx].mean()
+            feature_std = data_input[:, :, feature_idx].std()
+        else:
+            feature_mean = data_input[:, feature_idx].mean()
+            feature_std = data_input[:, feature_idx].std()
 
         print(f"📊 {feature_name} (idx {feature_idx}) stats: mean={feature_mean:.6f}, std={feature_std:.6f}")
 
         # Safe normalization (skip if std is too small)
         if feature_std > 1e-8:
-            data_input[:, :, feature_idx] = (
-                (data_input[:, :, feature_idx] - feature_mean) / feature_std
-            )
+            if is_3d:
+                data_input[:, :, feature_idx] = (
+                    (data_input[:, :, feature_idx] - feature_mean) / feature_std
+                )
+            else:
+                data_input[:, feature_idx] = (
+                    (data_input[:, feature_idx] - feature_mean) / feature_std
+                )
             feature_means[feature_idx] = feature_mean
             feature_stds[feature_idx] = feature_std
             print(f"   ✅ {feature_name} normalized")
@@ -92,9 +104,16 @@ def normalize_outputs(data_output, min_std_threshold=1e-6):
     print(f"🔍 Filtering tasks with std >= {min_std_threshold}...")
     original_size = len(data_output)
 
+    # Handle both 2D and 3D tensors
+    is_3d = data_output.dim() == 3
+
     for i in range(len(data_output)):
-        output_mean = data_output[i, :, :].mean()
-        output_std = data_output[i, :, :].std()
+        if is_3d:
+            output_mean = data_output[i, :, :].mean()
+            output_std = data_output[i, :, :].std()
+        else:
+            output_mean = data_output[i, :].mean()
+            output_std = data_output[i, :].std()
 
         # NaN/Inf check
         has_nan_inf = (torch.isnan(data_output[i]).any() or
@@ -107,7 +126,10 @@ def normalize_outputs(data_output, min_std_threshold=1e-6):
 
         if is_valid:
             # Normalize output
-            data_output[i, :, :] = (data_output[i, :, :] - output_mean) / (output_std + 1e-8)
+            if is_3d:
+                data_output[i, :, :] = (data_output[i, :, :] - output_mean) / (output_std + 1e-8)
+            else:
+                data_output[i, :] = (data_output[i, :] - output_mean) / (output_std + 1e-8)
             output_means.append(output_mean)
             output_stds.append(output_std)
             valid_indices.append(i)

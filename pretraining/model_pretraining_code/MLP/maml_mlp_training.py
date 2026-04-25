@@ -18,10 +18,11 @@ import glob
 import re
 
 # MAML import
-sys.path.append('../../model_code/')
-from maml_optimized import OptimizedMAML, MAMLModel_3hidden
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../model_code'))
+from mlp_maml import OptimizedMAML, MAMLModel_3hidden
 
-# Import utility functions
+# Import utility functions (utils is in parent directory)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from utils.maml_utils import (extract_iteration_from_filename, find_pretrained_model, load_pretrained_model,
                         normalize_input_features, normalize_and_filter_tasks)
 from utils.dataset_config import get_dataset_config, print_available_datasets, load_dataset_by_config
@@ -47,6 +48,13 @@ def main():
                         help='GPU device ID (default: 0)')
     parser.add_argument('--num_iterations', type=int, default=300000,
                         help='Number of training iterations (default: 300000)')
+    # Loss logging options
+    parser.add_argument('--enable_loss_logging', action='store_true',
+                        help='Enable training loss logging at specified intervals')
+    parser.add_argument('--loss_log_every', type=int, default=1000,
+                        help='Log training loss every N iterations (default: 1000)')
+    parser.add_argument('--loss_log_dir', type=str, default=None,
+                        help='Directory to save loss logs (default: loss_logs/)')
     args = parser.parse_args()
 
     # GPU 설정
@@ -64,7 +72,7 @@ def main():
 
     # 학습 설정
     additional_iterations = args.num_iterations  # 추가로 학습할 iteration 수
-    chunk_size = 30000
+    chunk_size = 10000
     num_chunks = additional_iterations // chunk_size
 
     # GPU utilization 모니터링
@@ -99,8 +107,8 @@ def main():
     print(f"   GPU: {args.gpu}")
 
     # 모델 디렉토리 경로
-    pretrained_models_dir = "../../pretrained_models/taskdivide_all"
-    checkpoint_dir = "../../pretrained_models/checkpoints/taskdivide_all_checkpoints"
+    pretrained_models_dir = "../../pretrained_models/training_loss_taskdivide_all"
+    checkpoint_dir = "../../pretrained_models/checkpoints/training_loss_taskdivide_all_checkpoints"
 
     # 디렉토리 생성 (없으면)
     os.makedirs(pretrained_models_dir, exist_ok=True)
@@ -145,12 +153,21 @@ def main():
     input_features = test_data_input.shape[2]
     print(f"Input features: {input_features}")
 
+    # Build loss logging configuration
+    loss_logging_config = {
+        'enabled': args.enable_loss_logging,
+        'log_every': args.loss_log_every,
+        'save_dir': args.loss_log_dir
+    }
+
     # 최적화된 MAML 모델 생성 (더 보수적인 학습률)
     print("🤖 Creating optimized MAML model...")
     calculated_inner_lr = 0.001 / innerdiv
     print(f"📊 Learning rates:")
     print(f"   Inner LR: 0.001 / {innerdiv} = {calculated_inner_lr}")
     print(f"   Meta LR: 0.0001")
+    if args.enable_loss_logging:
+        print(f"   Loss logging: enabled (every {args.loss_log_every} iterations)")
 
     maml2 = OptimizedMAML(
         model=MAMLModel_3hidden(in_features=input_features, layer_length=layer_length),
@@ -159,7 +176,8 @@ def main():
         inner_lr=calculated_inner_lr,  # 계산된 inner learning rate
         meta_lr=0.0001,  # 더 작은 meta learning rate
         inner_steps=inner,  # 기본값 유지
-        tasks_per_meta_batch=meta  # 더 작은 배치 크기로 안정성 증대
+        tasks_per_meta_batch=meta,  # 더 작은 배치 크기로 안정성 증대
+        loss_logging_config=loss_logging_config
     )
 
     # 기존 학습된 모델 로드
@@ -223,6 +241,9 @@ def main():
         torch.cuda.synchronize()
         chunk_start_time = time.time()
 
+        # Calculate starting iteration for this chunk (for loss logging)
+        chunk_start_iteration = start_iteration + ((chunk-1) * chunk_size)
+
         # 안정적인 메인 루프 실행 (NaN 감지 포함)
         try:
             # 훈련 전 파라미터 상태 체크
@@ -243,20 +264,21 @@ def main():
                     inner_lr=reinit_inner_lr,
                     meta_lr=0.00005,
                     inner_steps=inner,
-                    tasks_per_meta_batch=meta
+                    tasks_per_meta_batch=meta,
+                    loss_logging_config=loss_logging_config
                 )
 
-            maml2.main_loop_optimized(num_iterations=chunk_size)
+            maml2.main_loop_optimized(num_iterations=chunk_size, start_iteration=chunk_start_iteration)
         except Exception as e:
             print(f"⚠️ 병렬 처리 실패, 순차적 처리로 전환: {e}")
             try:
-                maml2.main_loop_sequential(num_iterations=chunk_size)
+                maml2.main_loop_sequential(num_iterations=chunk_size, start_iteration=chunk_start_iteration)
             except Exception as e2:
                 print(f"⚠️ 순차 처리도 실패: {e2}")
                 print("⚠️ 학습률을 더 낮춰서 재시도...")
                 maml2.inner_lr *= 0.5
                 maml2.meta_lr *= 0.5
-                maml2.main_loop_sequential(num_iterations=chunk_size//2)
+                maml2.main_loop_sequential(num_iterations=chunk_size//2, start_iteration=chunk_start_iteration)
 
         # GPU utilization 측정 종료
         torch.cuda.synchronize()
@@ -286,6 +308,14 @@ def main():
     print(f"\n🏁 Training complete!")
     print(f"   Final model saved to: {os.path.basename(final_model_path)}")
     print(f"   Final cumulative iteration: {final_iteration}")
+
+    # Save loss log if enabled
+    if args.enable_loss_logging and maml2.iteration_loss_log:
+        loss_log_dir = args.loss_log_dir or "../../pretrained_models/loss_logs_maml"
+        os.makedirs(loss_log_dir, exist_ok=True)
+        loss_log_filename = f"loss_log_maml_{tech}_{model_suffix}_{data_type}_innerdiv{innerdiv}_meta{meta}_iter{final_iteration}_inner{inner}.json"
+        loss_log_path = os.path.join(loss_log_dir, loss_log_filename)
+        maml2.save_loss_log(loss_log_path)
 
     # GPU 메모리 정리
     del maml2, test_data_input, test_data_output_1

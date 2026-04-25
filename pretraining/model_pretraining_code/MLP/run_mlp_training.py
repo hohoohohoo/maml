@@ -2,9 +2,9 @@
 # coding: utf-8
 
 """
-Topology Pretraining Wrapper Script
+MLP Training Wrapper Script
 
-Wrapper script for topology pretraining supporting both MLP and MAML.
+Wrapper script for MLP pretraining supporting both Baseline MLP and MAML.
 Supports both interactive and command-line modes with model-specific arguments.
 """
 
@@ -13,13 +13,14 @@ import sys
 import subprocess
 import argparse
 
-# Import configuration
+# Import configuration (utils is in parent directory)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from utils.dataset_config import get_dataset_config
 
 def print_banner():
     """Print welcome banner"""
     print("\n" + "="*80)
-    print(" "*20 + "Topology Pretraining Wrapper")
+    print(" "*20 + "MLP Training Wrapper")
     print("="*80 + "\n")
 
 def select_model_framework():
@@ -143,7 +144,7 @@ def get_mlp_parameters(config):
 def parse_args():
     """Parse command-line arguments with model-specific options"""
     parser = argparse.ArgumentParser(
-        description='Topology Pretraining Wrapper',
+        description='MLP Training Wrapper',
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
 
@@ -155,8 +156,8 @@ def parse_args():
                                        formatter_class=argparse.RawDescriptionHelpFormatter,
                                        epilog="""
 Examples:
-  python run_topology_pretraining.py mlp --config 0 --data_type cell
-  python run_topology_pretraining.py mlp --config 1 --model_type mlp --num_iterations 100000
+  python run_mlp_training.py mlp --config 0 --data_type cell
+  python run_mlp_training.py mlp --config 1 --model_type mlp --num_iterations 100000
 """)
 
     # MLP required arguments
@@ -182,8 +183,8 @@ Examples:
                                         formatter_class=argparse.RawDescriptionHelpFormatter,
                                         epilog="""
 Examples:
-  python run_topology_pretraining.py maml --config 0 --data_type transition
-  python run_topology_pretraining.py maml --config 2 --inner 2 --meta 64 --auto_resume
+  python run_mlp_training.py maml --config 0 --data_type transition
+  python run_mlp_training.py maml --config 2 --inner 2 --meta 64 --auto_resume
 """)
 
     # MAML required arguments
@@ -219,7 +220,7 @@ Examples:
 
 def build_maml_command(config_id, params):
     """Build the MAML command to execute"""
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MAML_topology_pretraining.py')
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'maml_mlp_training.py')
 
     cmd = [sys.executable, script_path]
     cmd.extend(['--dataset_config', str(config_id)])
@@ -239,7 +240,7 @@ def build_maml_command(config_id, params):
 
 def build_mlp_command(config_id, params):
     """Build the MLP command to execute"""
-    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'MLP_topology_pretraining.py')
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'baseline_mlp_training.py')
 
     cmd = [sys.executable, script_path]
     cmd.extend(['--dataset_config', str(config_id)])
@@ -258,7 +259,7 @@ def confirm_execution(model_type, config_id, params, cmd, auto_confirm=False):
     print("="*80)
     print(f"\nModel Type: {model_type.upper()}")
     print(f"Configuration: {get_config_name(config_id)}")
-    print(f"Script: {model_type.upper()}_topology_pretraining.py")
+    print(f"Script: {'maml_mlp_training.py' if model_type == 'maml' else 'baseline_mlp_training.py'}")
 
     print(f"\nParameters:")
     print(f"  Data type: {params['data_type']}")
@@ -388,11 +389,11 @@ def main():
         if args.model is None:
             print("Error: Model not specified. Use 'mlp' or 'maml' as the first argument.")
             print("\nUsage:")
-            print("  python run_topology_pretraining.py mlp --config 0 --data_type cell")
-            print("  python run_topology_pretraining.py maml --config 2 --inner 2 --meta 64")
+            print("  python run_mlp_training.py mlp --config 0 --data_type cell")
+            print("  python run_mlp_training.py maml --config 2 --inner 2 --meta 64")
             print("\nFor help:")
-            print("  python run_topology_pretraining.py mlp -h")
-            print("  python run_topology_pretraining.py maml -h")
+            print("  python run_mlp_training.py mlp -h")
+            print("  python run_mlp_training.py maml -h")
             return 1
         return main_commandline(args)
     else:

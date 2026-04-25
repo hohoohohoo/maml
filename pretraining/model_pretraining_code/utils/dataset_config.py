@@ -26,13 +26,13 @@ DATASET_CONFIGS = {
         'name': 'TSMC_intra_topology',
         'tech': 'tsmc',
         'topology_type': 'intra',
-        'description': 'TSMC intra-topology dataset (dataset_tsmc_processed/intra_topology_data)'
+        'description': 'TSMC intra-topology dataset (dataset_TSMC/intra_topology_data)'
     },
     3: {
         'name': 'TSMC_topology_agnostic',
         'tech': 'tsmc',
         'topology_type': 'agnostic',
-        'description': 'TSMC topology-agnostic dataset (dataset_tsmc_processed/topology_agnostic_data)'
+        'description': 'TSMC topology-agnostic dataset (dataset_TSMC/topology_agnostic_data)'
     }
 }
 
@@ -100,6 +100,16 @@ def load_dataset_by_config(config_id, data_type='cell'):
         test_data_input2 = torch.load(f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_ASAP7/unified_invbuf/merged_invbuf_input_{data_type}.pth")
         test_data_output_2 = torch.load(f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_ASAP7/unified_invbuf/merged_invbuf_output_{data_type}.pth")
 
+        # Handle dimension mismatch: squeeze all 3D tensors with last dim=1 to 2D
+        if test_data_output_1.dim() == 3 and test_data_output_1.shape[-1] == 1:
+            test_data_output_1 = test_data_output_1.squeeze(-1)
+        if test_data_output_2.dim() == 3 and test_data_output_2.shape[-1] == 1:
+            test_data_output_2 = test_data_output_2.squeeze(-1)
+        if test_data_input.dim() == 3 and test_data_input.shape[-1] == 1:
+            test_data_input = test_data_input.squeeze(-1)
+        if test_data_input2.dim() == 3 and test_data_input2.shape[-1] == 1:
+            test_data_input2 = test_data_input2.squeeze(-1)
+
         test_data_input = torch.cat([test_data_input, test_data_input2], dim=0)
         test_data_output_1 = torch.cat([test_data_output_1, test_data_output_2], dim=0)
 
@@ -112,18 +122,28 @@ def load_dataset_by_config(config_id, data_type='cell'):
         test_data_input2 = torch.load(f"{data_dir2}/{data_type}_topology_agnostic_train_input.pth")
         test_data_output_2 = torch.load(f"{data_dir2}/{data_type}_topology_agnostic_train_output.pth")
 
+        # Handle dimension mismatch: squeeze all 3D tensors with last dim=1 to 2D
+        if test_data_output_1.dim() == 3 and test_data_output_1.shape[-1] == 1:
+            test_data_output_1 = test_data_output_1.squeeze(-1)
+        if test_data_output_2.dim() == 3 and test_data_output_2.shape[-1] == 1:
+            test_data_output_2 = test_data_output_2.squeeze(-1)
+        if test_data_input.dim() == 3 and test_data_input.shape[-1] == 1:
+            test_data_input = test_data_input.squeeze(-1)
+        if test_data_input2.dim() == 3 and test_data_input2.shape[-1] == 1:
+            test_data_input2 = test_data_input2.squeeze(-1)
+
         test_data_input = torch.cat([test_data_input, test_data_input2], dim=0)
         test_data_output_1 = torch.cat([test_data_output_1, test_data_output_2], dim=0)
 
     elif config_id == 2:
         # TSMC intra-topology
-        data_dir = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_tsmc_processed/intra_topology_data/"
+        data_dir = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/intra_topology_data"
         test_data_input = torch.load(f"{data_dir}/tsmc_intra_topology_train_input_{data_type}.pth")
         test_data_output_1 = torch.load(f"{data_dir}/tsmc_intra_topology_train_output_{data_type}.pth")
 
     elif config_id == 3:
         # TSMC topology-agnostic
-        data_dir = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_tsmc_processed/topology_agnostic_data"
+        data_dir = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/topology_agnostic_data"
         test_data_input = torch.load(f"{data_dir}/tsmc_topology_agnostic_train_input_{data_type}.pth")
         test_data_output_1 = torch.load(f"{data_dir}/tsmc_topology_agnostic_train_output_{data_type}.pth")
 

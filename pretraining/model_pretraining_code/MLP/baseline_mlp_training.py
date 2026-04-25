@@ -11,8 +11,11 @@ import time
 import argparse
 
 # Import MLP utilities
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../model_code'))
-from networks import MLP_pretraining
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../../model_code'))
+from baseline_mlp import MLP_pretraining
+
+# Import utility functions (utils is in parent directory)
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from utils.mlp_utils import normalize_features, normalize_outputs, save_model
 from utils.dataset_config import get_dataset_config, print_available_datasets, load_dataset_by_config
 
@@ -57,7 +60,8 @@ def load_and_preprocess_data(config_id, data_type='cell', device='cuda'):
 
 
 def train_mlp_model(config_id, num_iterations=100000, data_type='cell',
-                    learning_rate=1e-4, model_type='aadam', device='cuda'):
+                    learning_rate=1e-4, model_type='aadam', device='cuda',
+                    loss_logging_config=None):
     """
     Train MLP model on specified dataset configuration
 
@@ -68,6 +72,7 @@ def train_mlp_model(config_id, num_iterations=100000, data_type='cell',
         learning_rate (float): Learning rate for Adam optimizer
         model_type (str): Model type - 'aadam' (hidden=256) or 'mlp' (hidden=40)
         device (str): Device to train on
+        loss_logging_config (dict): Loss logging configuration
 
     Returns:
         dict: Training results including loss and model path
@@ -96,26 +101,36 @@ def train_mlp_model(config_id, num_iterations=100000, data_type='cell',
         dataset_out=test_data_output_1,
         iteration=num_iterations,
         hidden_size=hidden_size,
-        input_size=9
+        input_size=9,
+        loss_logging_config=loss_logging_config
     )
 
-    # Determine naming suffix based on topology type and tech
+    # Determine naming convention to match validation script expectations
+    # Format: pretrained_{tech}_{topology_type}_{data_type}_{model_type}_{num_iterations}.pth
     if topology_type == 'intra':
-        topology_suffix = 'intratopology'
+        topology_name = 'intra_topology'
     else:  # agnostic
-        topology_suffix = 'topology_agnostic'
-
-    tech_suffix = '' if tech == 'asap7' else '_tsmc'
+        topology_name = 'topology_agnostic'
 
     # Checkpoint directory
-    checkpoint_dir = f'../../pretrained_models/MLP_pretrained_model/checkpoints_{topology_suffix}_{data_type}{tech_suffix}_{model_type}_{num_iterations}'
+    checkpoint_dir = f'../../pretrained_models/MLP_pretrained_model/training_loss_checkpoints_{tech}_{topology_name}_{data_type}_{model_type}_{num_iterations}'
     mlp_train_loss = mlp.loop(checkpoint_dir=checkpoint_dir)
 
     # Save model using utility function
-    model_save_path = f'../../pretrained_models/MLP_pretrained_model/pretrained_mlp1_{topology_suffix}_{data_type}{tech_suffix}_{model_type}_{num_iterations}.pth'
+    # Naming convention matches test_dataset_config.py mlp_model_path patterns
+    model_save_path = f'../../pretrained_models/MLP_pretrained_model/training_loss_pretrained_{tech}_{topology_name}_{data_type}_{model_type}_{num_iterations}.pth'
     save_model(mlp.model, model_save_path, train_loss=mlp_train_loss)
 
     print(f"MLP - Train Loss: {mlp_train_loss:.6f}")
+
+    # Save loss log if enabled
+    if loss_logging_config and loss_logging_config.get('enabled', False) and mlp.iteration_loss_log:
+        loss_log_dir = loss_logging_config.get('save_dir') or f'../../pretrained_models/loss_logs_mlp'
+        import os
+        os.makedirs(loss_log_dir, exist_ok=True)
+        loss_log_filename = f"loss_log_mlp_{tech}_{topology_name}_{data_type}_{model_type}_{num_iterations}.json"
+        loss_log_path = os.path.join(loss_log_dir, loss_log_filename)
+        mlp.save_loss_log(loss_log_path)
 
     results = {
         'mlp_train_loss': mlp_train_loss,
@@ -141,6 +156,13 @@ def main():
                         help='Learning rate for Adam optimizer (default: 1e-4)')
     parser.add_argument('--model_type', type=str, default='aadam', choices=['aadam', 'mlp'],
                         help='Model type: aadam (hidden=256) or mlp (hidden=40) (default: aadam)')
+    # Loss logging options
+    parser.add_argument('--enable_loss_logging', action='store_true',
+                        help='Enable training loss logging at specified intervals')
+    parser.add_argument('--loss_log_every', type=int, default=1000,
+                        help='Log training loss every N iterations (default: 1000)')
+    parser.add_argument('--loss_log_dir', type=str, default=None,
+                        help='Directory to save loss logs (default: loss_logs/)')
     args = parser.parse_args()
 
     # GPU 설정
@@ -179,6 +201,13 @@ def main():
     print(f"   Number of iterations: {args.num_iterations}")
     print(f"   Learning rate: {args.learning_rate}")
 
+    # Build loss logging configuration
+    loss_logging_config = {
+        'enabled': args.enable_loss_logging,
+        'log_every': args.loss_log_every,
+        'save_dir': args.loss_log_dir
+    }
+
     try:
         results = train_mlp_model(
             config_id=dataset_config_id,
@@ -186,7 +215,8 @@ def main():
             data_type=data_type,
             learning_rate=args.learning_rate,
             model_type=model_type,
-            device=device
+            device=device,
+            loss_logging_config=loss_logging_config
         )
 
         print(f"\n📊 Training Results:")
