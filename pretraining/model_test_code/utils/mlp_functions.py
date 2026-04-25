@@ -4,6 +4,7 @@ MLP-specific functions for extrapolation testing
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import copy
 
 
 def model_functions_at_training_mlp(initial_model, X, y, true_x, true_function,
@@ -24,14 +25,8 @@ def model_functions_at_training_mlp(initial_model, X, y, true_x, true_function,
     mean = mean.to(device) if isinstance(mean, torch.Tensor) else torch.tensor(mean).to(device)
 
 
-    # Import MLP model (must be imported where MLP class is defined)
     # Copy MLP model into a new object to preserve initial weights during training
-    input_dim = X.shape[2] if len(X.shape) > 2 else X.shape[1]
-
-    # We need to import MLP class - this will be handled in the main script
-    from networks import MLP_Aadam
-    model = MLP_Aadam(input_size=input_dim, output_size=1).to(device)
-    model.load_state_dict(initial_model.state_dict())
+    model = copy.deepcopy(initial_model).to(device)
 
     criterion = nn.MSELoss()
     optimiser = optim(model.parameters(), lr, weight_decay=1e-4)
@@ -59,13 +54,7 @@ def model_functions_at_training_mlp(initial_model, X, y, true_x, true_function,
 
     # Calculate losses
     total_loss = 0
-    total_inter_loss = 0
-    total_rightex_loss = 0
-    total_leftex_loss = 0
     total_mape_loss = 0
-    total_leftex_mape = 0
-    total_inter_mape = 0
-    total_rightex_mape = 0
 
     # Store predictions and actual values for plotting
     predictions = []
@@ -89,63 +78,59 @@ def model_functions_at_training_mlp(initial_model, X, y, true_x, true_function,
         total_loss += loss
         total_mape_loss += mape_loss
 
-        # Regional calculations (only for extrapolation mode)
-        if mode == 'extrapolation':
-            if i < left_bound:  # Left extrapolation region
-                total_leftex_loss += loss
-                total_leftex_mape += mape_loss
-            elif i < right_bound:  # Interpolation region
-                total_inter_loss += loss
-                total_inter_mape += mape_loss
-            else:  # Right extrapolation region
-                total_rightex_loss += loss
-                total_rightex_mape += mape_loss
-        else:  # interpolation mode - only calculate interpolation region
-            if i >= left_bound and i < right_bound:
-                total_inter_loss += loss
-                total_inter_mape += mape_loss
-
-    # Calculate average losses and MAPEs for each region
+    # Calculate average losses
     avg_total_loss = total_loss / total_points
-
-    # For interpolation mode, only calculate interpolation metrics
-    if mode == 'interpolation':
-        avg_inter_loss = total_inter_loss / (right_bound - left_bound) if (right_bound - left_bound) > 0 else 0
-        avg_inter_mape = total_inter_mape / (right_bound - left_bound) if (right_bound - left_bound) > 0 else 0
-        avg_leftex_loss = 0
-        avg_rightex_loss = 0
-        avg_leftex_mape = 0
-        avg_rightex_mape = 0
-    else:  # extrapolation mode
-        avg_inter_loss = total_inter_loss / (right_bound - left_bound) if (right_bound - left_bound) > 0 else 0
-        avg_rightex_loss = total_rightex_loss / (total_points - right_bound) if (total_points - right_bound) > 0 else 0
-        avg_leftex_loss = total_leftex_loss / left_bound if left_bound > 0 else 0
-        avg_total_mape = total_mape_loss / total_points
-        avg_leftex_mape = total_leftex_mape / left_bound if left_bound > 0 else 0
-        avg_inter_mape = total_inter_mape / (right_bound - left_bound) if (right_bound - left_bound) > 0 else 0
-        avg_rightex_mape = total_rightex_mape / (total_points - right_bound) if (total_points - right_bound) > 0 else 0
-
     avg_total_mape = total_mape_loss / total_points
 
-    return (model, outputs, losses, avg_total_loss, avg_inter_loss, avg_rightex_loss, avg_leftex_loss,
-            avg_total_mape, avg_leftex_mape, avg_inter_mape, avg_rightex_mape, predictions, actual_values,
+    return (model, outputs, losses, avg_total_loss, avg_total_mape, predictions, actual_values,
             adam_condition_triggered)
 
 
 def evaluate_model_performance_mlp(initial_model, model_name, X, y, true_x, true_function, grad, move,
                                   optim=torch.optim.SGD, lr=0.001,
-                                  left_bound=5, right_bound=56, total_points=61, mode='extrapolation'):
+                                  left_bound=5, right_bound=56, total_points=61, mode='extrapolation',
+                                  adaptation_method='selective_adam'):
+    """
+    Evaluate MLP model performance with grad/move normalization parameters.
+
+    Args:
+        adaptation_method: 'selective_adam' (grad/move + conditional Adam) or 'adam' (direct Adam, no grad/move)
+
+    Returns:
+        tuple: (total_loss, total_mape, predictions, actual_values, model, adam_used, mae_total)
+    """
     import numpy as np
 
+    # If using 'adam' method, use direct Adam without grad/move scaling
+    if adaptation_method == 'adam':
+        result = model_functions_with_optim_mode_mlp(
+            initial_model=initial_model,
+            X=X,
+            y=y,
+            true_x=true_x,
+            true_function=true_function,
+            optim_mode='adam',
+            num_steps=40,
+            lr=0.003,
+            std=1,
+            mean=0,
+            move=0,
+            grad=1,
+            left_bound=left_bound,
+            right_bound=right_bound,
+            total_points=total_points,
+            mode=mode
+        )
+
+        return (result['total_loss'], result['total_mape'],
+                result['predictions'], result['actual_values'], result['model'], True,
+                result['total_mae'])
+
+    # Original selective_adam method with grad/move scaling
     y_mean = y.mean()
     y_std = y.std()
     mean_values = [y_mean]
     std_values = [y_std * grad]
-    loss_min = 10000
-    inter_loss_min = 10000
-    rightex_loss_min = 10000
-    leftex_loss_min = 10000
-    mape_min = 10000
 
     # Store all predictions and actuals for final plotting
     all_predictions = []
@@ -161,8 +146,7 @@ def evaluate_model_performance_mlp(initial_model, model_name, X, y, true_x, true
             true_function1 = (true_function-y_mean1) / y_std1 + move
 
             # Pass the updated mean and std to model_functions_at_training
-            (model, outputs, losses, total_loss, total_inter_loss, total_rightex_loss, total_leftex_loss,
-             total_mape_loss, leftex_mape, inter_mape, rightex_mape, predictions, actual_values,
+            (model, outputs, losses, total_loss, total_mape_loss, predictions, actual_values,
              adam_condition_triggered) = model_functions_at_training_mlp(
                 initial_model,
                 X, y=y_test,
@@ -186,18 +170,111 @@ def evaluate_model_performance_mlp(initial_model, model_name, X, y, true_x, true
 
             model_min = model
             loss_min = total_loss
-            mean_min = mean
-            std_min = std
-            output_min = outputs
-            losses_min = losses
-            inter_loss_min = total_inter_loss
-            leftex_loss_min = total_leftex_loss
-            rightex_loss_min = total_rightex_loss
             mape_min = total_mape_loss
-            leftex_mape_min = leftex_mape
-            inter_mape_min = inter_mape
-            rightex_mape_min = rightex_mape
 
-    return (loss_min, inter_loss_min, leftex_loss_min, rightex_loss_min,
-            mape_min, leftex_mape_min, inter_mape_min, rightex_mape_min,
-            all_predictions, all_actuals, output_min, model_min, mean_min, std_min, move, losses_min, adam_used)
+    # Calculate MAE from predictions and actuals
+    mae_total = sum(abs(p - a) for p, a in zip(all_predictions, all_actuals)) / len(all_predictions) if all_predictions else 0
+
+    return (loss_min, mape_min, all_predictions, all_actuals, model_min, adam_used, mae_total)
+
+
+def model_functions_with_optim_mode_mlp(initial_model, X, y, true_x, true_function,
+                                         optim_mode='selective_adam', num_steps=50, lr=0.003,
+                                         std=1, mean=10, move=0, grad=1,
+                                         left_bound=5, right_bound=56, total_points=61, mode='extrapolation'):
+    """
+    Train MLP model with different optimization modes for comparison.
+
+    Args:
+        optim_mode:
+            - 'adam': Direct Adam optimization (no grad/move)
+            - 'selective_adam': Grad+Move + Adam if loss > threshold
+    """
+    import math
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    # Determine if using grad/move scaling
+    use_grad_move = optim_mode in ['selective_adam']
+
+    X = X.to(device)
+    y_tensor = y.clone().to(device)
+    true_x = true_x.to(device)
+    true_function_tensor = true_function.clone().to(device)
+    std_tensor = std.to(device) if isinstance(std, torch.Tensor) else torch.tensor(std).to(device)
+    mean_tensor = mean.to(device) if isinstance(mean, torch.Tensor) else torch.tensor(mean).to(device)
+    move_tensor = move.to(device) if isinstance(move, torch.Tensor) else torch.tensor(move).to(device)
+
+    # Copy model using deepcopy to preserve architecture
+    model = copy.deepcopy(initial_model).to(device)
+
+    criterion = nn.MSELoss()
+    K = X.shape[0]
+    losses = []
+
+    # For adam: normalize y for training (simple mean/std normalization)
+    if not use_grad_move:
+        y_mean_local = y_tensor.mean()
+        y_std_local = y_tensor.std() + 1e-8
+        y_train = (y_tensor - y_mean_local) / y_std_local
+    else:
+        y_train = y_tensor
+
+    initial_loss = criterion(model(X), y_train) / K
+    losses.append(initial_loss.item())
+
+    # Apply Adam optimization
+    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
+    for step in range(num_steps):
+        loss = criterion(model(X), y_train) / K
+        losses.append(loss.item())
+        model.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+    # Evaluate
+    predictions = []
+    actual_values = []
+    total_loss = 0
+    total_mape_loss = 0
+    total_mae_loss = 0
+
+    model.eval()
+    with torch.no_grad():
+        for i in range(total_points):
+            raw_pred = model(true_x[i]).item()
+
+            if use_grad_move:
+                pred_value = ((raw_pred - move_tensor) * std_tensor + mean_tensor).item()
+                actual_value = ((true_function_tensor[i] - move_tensor) * std_tensor + mean_tensor).item()
+            else:
+                pred_value = (raw_pred * y_std_local + y_mean_local).item()
+                actual_value = true_function[i].item()
+
+            predictions.append(pred_value)
+            actual_values.append(actual_value)
+
+            squared_error = (pred_value - actual_value) ** 2
+            abs_error = abs(pred_value - actual_value)
+            mape_loss = abs_error / (abs(actual_value) + 1e-8)
+
+            total_loss += squared_error
+            total_mape_loss += mape_loss
+            total_mae_loss += abs_error
+
+    # Calculate averages
+    avg_total_loss = total_loss / total_points
+    avg_total_mape = total_mape_loss / total_points
+    avg_total_mae = total_mae_loss / total_points
+
+    return {
+        'model': model,
+        'losses': losses,
+        'predictions': predictions,
+        'actual_values': actual_values,
+        'total_loss': avg_total_loss,
+        'total_mape': avg_total_mape,
+        'total_mae': avg_total_mae,
+        'optim_mode': optim_mode,
+        'num_steps': num_steps,
+        'use_grad_move': use_grad_move
+    }

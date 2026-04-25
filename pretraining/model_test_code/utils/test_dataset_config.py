@@ -34,8 +34,8 @@ TEST_CONFIGS = {
         'test_output_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/{data_type}_{cell}_test_output.pth",
 
         # Model paths
-        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/checkpoints/taskdivide_all_checkpoints/{data_type}_innerdiv{innerdiv}_meta{meta}_intratopology_519traintask_full1DMAML_weights_3hidden_(40)_{num_iterations}_inner{inner}_upgraded.pth",
-        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/pretrained_asap7_all_intratopology_{data_type}_test5_{model_type}_{num_iterations}.pth",
+        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations, layer_length=40: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/checkpoints/taskdivide_all_checkpoints/{data_type}_innerdiv{innerdiv}_meta{meta}_intra_topology_519traintask_full1DMAML_weights_3hidden_({layer_length})_{num_iterations}_inner{inner}_upgraded.pth",
+        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/training_loss_pretrained_asap7_intra_topology_{data_type}_{model_type}_{num_iterations}.pth",
     },
 
     1: {
@@ -44,7 +44,8 @@ TEST_CONFIGS = {
         'topology_type': 'agnostic',
 
         # Default settings
-        'default_cells': ["MAJIxp5", "MAJx2", "MAJx3", "HAxp5", "FAx1", "XOR2xp5", "XOR2x2", "XOR2x1" ,"XNOR2xp5", "XNOR2x2", "XNOR2x1"],
+        'default_cells': ["A2O1A1O1Ixp25","AO21x1","AO32x1","O2A1O1Ixp5","OAI22x1","FAx1"],
+        #'default_cells': ["MAJIxp5", "MAJx2", "MAJx3", "HAxp5", "FAx1", "XOR2xp5", "XOR2x2", "XOR2x1" ,"XNOR2xp5", "XNOR2x2", "XNOR2x1","A2O1A1O1Ixp25","AO21x1","AO32x1","O2A1O1Ixp5","OAI22x1"],
         'default_gpu': '0',
         'default_meta': 32,
         'default_data_type': 'transition',
@@ -64,8 +65,8 @@ TEST_CONFIGS = {
         'test_output_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/{data_type}_{cell}_test_output.pth",
 
         # Model paths
-        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/checkpoints/taskdivide_all_checkpoints/{data_type}_innerdiv{innerdiv}_meta{meta}_topology_agnostic_519traintask_full1DMAML_weights_3hidden_(40)_{num_iterations}_inner{inner}_upgraded.pth",
-        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/pretrained_asap7_all_topology_agnostic_{data_type}_test5_{model_type}_{num_iterations}.pth",
+        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations, layer_length=40: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/checkpoints/taskdivide_all_checkpoints/{data_type}_innerdiv{innerdiv}_meta{meta}_topology_agnostic_519traintask_full1DMAML_weights_3hidden_({layer_length})_{num_iterations}_inner{inner}_upgraded.pth",
+        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/training_loss_pretrained_asap7_topology_agnostic_{data_type}_{model_type}_{num_iterations}.pth",
     },
 
     2: {
@@ -74,8 +75,8 @@ TEST_CONFIGS = {
         'topology_type': 'intra',
 
         # Default settings
-        'default_cells': ['NR3D1BWP30P140', 'OR4D0BWP30P140', 'ND3D0BWP30P140',
-                          'AN4D0BWP30P140', 'XOR3D1BWP30P140', 'XNR3D1BWP30P140'],
+        'default_cells': ['AN4D0BWP30P140', 'NR3D1BWP30P140', 'OR4D0BWP30P140', 'ND3D0BWP30P140',
+                           'XOR3D1BWP30P140', 'XNR3D1BWP30P140'],
         'default_gpu': '3',
         'default_meta': 32,
         'default_data_type': 'transition',
@@ -83,18 +84,18 @@ TEST_CONFIGS = {
 
         # Training data paths
         'train_data_paths': lambda data_type: [
-            (f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_tsmc_processed/intra_topology_data/tsmc_intra_topology_train_input_{data_type}.pth",
-             f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_tsmc_processed/intra_topology_data/tsmc_intra_topology_train_output_{data_type}.pth")
+            (f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/intra_topology_data/tsmc_intra_topology_train_input_{data_type}.pth",
+             f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/intra_topology_data/tsmc_intra_topology_train_output_{data_type}.pth")
         ],
 
         # Test data directory pattern
-        'test_data_dir': "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_tsmc_processed/intra_topology_data/",
+        'test_data_dir': "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/intra_topology_data/",
         'test_input_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_input_{data_type}.pth",
         'test_output_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_output_{data_type}.pth",
 
         # Model paths
-        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/taskdivide_all/{data_type}_innerdiv{innerdiv}_meta{meta}_intra_topology_519traintask_full1DMAML_weights_3hidden_(40)_{num_iterations}_inner{inner}_upgraded_tsmc_merged.pth",
-        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/pretrained_tsmc_all_intratopology_{data_type}_test5_{model_type}_{num_iterations}.pth",
+        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations, layer_length=40: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/taskdivide_all/{data_type}_innerdiv{innerdiv}_meta{meta}_intra_topology_519traintask_full1DMAML_weights_3hidden_({layer_length})_{num_iterations}_inner{inner}_upgraded_tsmc.pth",
+        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/training_loss_pretrained_tsmc_intra_topology_{data_type}_{model_type}_{num_iterations}.pth",
     },
 
     3: {
@@ -114,18 +115,18 @@ TEST_CONFIGS = {
 
         # Training data paths
         'train_data_paths': lambda data_type: [
-            (f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_tsmc_processed/topology_agnostic_data/tsmc_topology_agnostic_train_input_{data_type}.pth",
-             f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_tsmc_processed/topology_agnostic_data/tsmc_topology_agnostic_train_output_{data_type}.pth")
+            (f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/topology_agnostic_data/tsmc_topology_agnostic_train_input_{data_type}.pth",
+             f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/topology_agnostic_data/tsmc_topology_agnostic_train_output_{data_type}.pth")
         ],
 
         # Test data directory pattern
-        'test_data_dir': "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_tsmc_processed/topology_agnostic_data",
+        'test_data_dir': "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/topology_agnostic_data",
         'test_input_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_input_{data_type}.pth",
         'test_output_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_output_{data_type}.pth",
 
         # Model paths
-        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/taskdivide_all/{data_type}_innerdiv{innerdiv}_meta{meta}_topology_agnostic_519traintask_full1DMAML_weights_3hidden_(40)_{num_iterations}_inner{inner}_upgraded_tsmc.pth",
-        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/pretrained_tsmc_all_topology_agnostic_{data_type}_test5_{model_type}_{num_iterations}.pth",
+        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations, layer_length=40: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/taskdivide_all/{data_type}_innerdiv{innerdiv}_meta{meta}_topology_agnostic_519traintask_full1DMAML_weights_3hidden_({layer_length})_{num_iterations}_inner{inner}_upgraded_tsmc.pth",
+        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/training_loss_pretrained_tsmc_topology_agnostic_{data_type}_{model_type}_{num_iterations}.pth",
     }
 }
 
@@ -185,7 +186,7 @@ def get_test_data_paths(config_id, cell, data_type='transition'):
     return input_path, output_path
 
 
-def get_maml_model_path(config_id, data_type='transition', innerdiv=100, meta=None, inner=1, num_iterations=None, custom_path=None):
+def get_maml_model_path(config_id, data_type='transition', innerdiv=100, meta=None, inner=1, num_iterations=None, layer_length=40, custom_path=None):
     """
     Get MAML model path
 
@@ -196,6 +197,7 @@ def get_maml_model_path(config_id, data_type='transition', innerdiv=100, meta=No
         meta (int): Meta batch size (if None, uses default)
         inner (int): Inner loop steps
         num_iterations (int): Number of training iterations (if None, uses default)
+        layer_length (int): Hidden layer size (default: 40)
         custom_path (str): Custom model path (overrides auto-detection)
 
     Returns:
@@ -212,7 +214,7 @@ def get_maml_model_path(config_id, data_type='transition', innerdiv=100, meta=No
     if num_iterations is None:
         num_iterations = config['default_num_iterations']
 
-    return config['maml_model_path'](data_type, innerdiv, meta, inner, num_iterations)
+    return config['maml_model_path'](data_type, innerdiv, meta, inner, num_iterations, layer_length)
 
 
 def get_mlp_model_path(config_id, data_type='cell', model_type='aadam', num_iterations=300000, custom_path=None):
