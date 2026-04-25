@@ -15,7 +15,7 @@ if [ $# -lt 1 ]; then
     echo "  $0 json_configs/validation_gnn_asap7_topology_sweep_config.json --dry-run"
     echo ""
     echo "Note: Requires ASAP7 Process GNN dataset to be pre-generated."
-    echo "      Dataset: dataset_all/dataset_temp_process/"
+    echo "      Dataset: dataset_all/GNN_dataset_ASAP7/"
     exit 1
 fi
 
@@ -54,6 +54,13 @@ EXPERIMENT_NAME=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))
 MODEL_TYPE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['model_type'])")
 DATA_TYPE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['data_type'])")
 GRAPH_MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['graph_mode'])")
+VOLTAGE_MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('voltage_mode', 'all_nodes'))")
+NORMALIZATION=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('normalization', 'zscore'))")
+TEMP_MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('temp_mode', 'typical'))")
+CACHE_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('cache_path', ''))")
+INPUTPORT=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('--inputport' if c.get('inputport', False) else '')")
+RELATED_PIN_ONLY=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('--related_pin_only' if c.get('related_pin_only', False) else '')")
+SAMPLE_SUFFIX=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('sample_suffix', '_10pct'))")
 MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['mode'])")
 TOTAL_POINTS=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['total_points'])")
 NUM_TEST_SAMPLES=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['num_test_samples'])")
@@ -61,6 +68,9 @@ NUM_ITERATIONS=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))[
 SAVE_RESULTS=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('--save_results' if c.get('save_results', False) else '')")
 FILTER_CONTINUOUS=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('--filter_continuous' if c.get('filter_continuous', False) else '')")
 CONTINUITY_THRESHOLD=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('continuity_threshold', 0.18))")
+POOLING=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('pooling', 'mean'))")
+ADAPTATION_METHOD=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('adaptation_method', 'selective_adam'))")
+OUTPUT_DIR=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('output_dir', 'final'))")
 GPU=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['gpu'])")
 
 # MAML-specific params (only used if model_type is maml)
@@ -93,7 +103,33 @@ echo "Experiment: $EXPERIMENT_NAME"
 echo "Model type: $MODEL_TYPE"
 echo "Data type: $DATA_TYPE"
 echo "Graph mode: $GRAPH_MODE"
+echo "Voltage mode: $VOLTAGE_MODE"
+echo "Normalization: $NORMALIZATION"
+echo "Temp mode: $TEMP_MODE"
+if [ -n "$CACHE_PATH" ]; then
+    echo "Cache path: $CACHE_PATH"
+    # Display topology cache options detected from cache_path
+    if [[ "$CACHE_PATH" == *"_gatectrl"* ]]; then
+        echo "  - gatectrl: enabled"
+    fi
+    if [[ "$CACHE_PATH" == *"_bidir"* ]]; then
+        echo "  - bidir: enabled"
+    fi
+    if [[ "$CACHE_PATH" == *"_directmos"* ]]; then
+        echo "  - directmos: enabled (skip intermediate nodes)"
+    fi
+fi
+if [ -n "$INPUTPORT" ]; then
+    echo "Inputport: enabled"
+fi
+if [ -n "$RELATED_PIN_ONLY" ]; then
+    echo "Related pin only: enabled"
+fi
+echo "Sample suffix: $SAMPLE_SUFFIX"
 echo "Mode: $MODE"
+echo "Pooling: $POOLING"
+echo "Adaptation method: $ADAPTATION_METHOD"
+echo "Output dir: $OUTPUT_DIR"
 echo "GPU: $GPU"
 echo "Node features: 11D (7 base + 4 process params)"
 echo ""
@@ -128,6 +164,21 @@ combos = list(itertools.product(
 for i, (exp, conv_dim, conv_layers, fc_dim, fc_layers) in enumerate(combos, 1):
     print(f'  {i}. {exp} - conv{conv_dim}x{conv_layers}_fc{fc_dim}x{fc_layers}')
 "
+    echo ""
+    echo "Supported pooling options:"
+    echo "  - mean: Global mean pooling (default)"
+    echo "  - max: Global max pooling"
+    echo "  - add: Global sum pooling"
+    echo "  - output: Output-node-only pooling"
+    echo ""
+    echo "Supported adaptation methods:"
+    echo "  - selective_adam: Grad/Move scaling + conditional Adam (default)"
+    echo "  - adam: Direct Adam optimization (no grad/move)"
+    echo ""
+    echo "Supported topology cache options (auto-detected from cache_path):"
+    echo "  - gatectrl: Gate control edges"
+    echo "  - bidir: Bidirectional edges"
+    echo "  - directmos: Skip intermediate nodes (connect MOS directly)"
     echo ""
     echo "Dry run complete. Use without --dry-run to execute."
     exit 0
@@ -172,6 +223,9 @@ for exp, conv_dim, conv_layers, fc_dim, fc_layers in combos:
     CMD="$CMD --model_type $MODEL_TYPE"
     CMD="$CMD --data_type $DATA_TYPE"
     CMD="$CMD --graph_mode $GRAPH_MODE"
+    CMD="$CMD --voltage_mode $VOLTAGE_MODE"
+    CMD="$CMD --normalization $NORMALIZATION"
+    CMD="$CMD --temp_mode $TEMP_MODE"
     CMD="$CMD --mode $MODE"
     CMD="$CMD --total_points $TOTAL_POINTS"
     CMD="$CMD --num_test_samples $NUM_TEST_SAMPLES"
@@ -180,7 +234,28 @@ for exp, conv_dim, conv_layers, fc_dim, fc_layers in combos:
     CMD="$CMD --num_conv_layers $CONV_LAYERS"
     CMD="$CMD --fc_hidden_dim $FC_DIM"
     CMD="$CMD --num_fc_layers $FC_LAYERS"
+    CMD="$CMD --pooling $POOLING"
+    CMD="$CMD --adaptation_method $ADAPTATION_METHOD"
+    CMD="$CMD --output_dir $OUTPUT_DIR"
     CMD="$CMD --gpu $GPU"
+
+    # Add cache_path if specified
+    if [ -n "$CACHE_PATH" ]; then
+        CMD="$CMD --cache_path $CACHE_PATH"
+    fi
+
+    # Add inputport flag if set
+    if [ -n "$INPUTPORT" ]; then
+        CMD="$CMD $INPUTPORT"
+    fi
+
+    # Add related_pin_only flag if set
+    if [ -n "$RELATED_PIN_ONLY" ]; then
+        CMD="$CMD $RELATED_PIN_ONLY"
+    fi
+
+    # Add sample_suffix
+    CMD="$CMD --sample_suffix $SAMPLE_SUFFIX"
 
     # Add MAML-specific params if needed
     if [ "$MODEL_TYPE" = "maml" ]; then

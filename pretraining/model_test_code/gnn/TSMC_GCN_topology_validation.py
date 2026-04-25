@@ -1,17 +1,16 @@
 #!/usr/bin/env python
 """
-ASAP7 GCN Topology Validation Script
+TSMC GCN Topology Validation Script
 
-This script validates GCN models for ASAP7 Process topology experiments:
+This script validates GCN models for TSMC topology experiments:
 - topology_agnostic: Test on unseen cell topologies
 - intra_topology: Test on seen cell topologies with unseen conditions
 
-Uses the ASAP7 Process dataset with 11D node features (7 base + 4 process params).
 Evaluates per-cell and aggregates results.
 
 Usage:
-  python ASAP7_GCN_topology_validation.py --experiment intra_topology --model_type maml --gpu 0
-  python ASAP7_GCN_topology_validation.py --experiment topology_agnostic --model_type maml --gpu 1
+  python TSMC_GCN_topology_validation.py --experiment intra_topology --model_type baseline --gpu 0
+  python TSMC_GCN_topology_validation.py --experiment topology_agnostic --model_type maml --gpu 1
 """
 
 import os
@@ -96,49 +95,38 @@ def filter_continuous_tasks(cell_dataset, task_indices, threshold_ratio=0.18, ve
     return continuous_indices, discontinuous_indices
 
 
-# Cell lists for each experiment type (ASAP7 Process dataset)
-# Based on dataset_ASAP7/test_intratopology/
+# Cell lists for each experiment type (matching dataset_TSMC structure)
 INTRA_TOPOLOGY_CELLS = [
-    'AND2x6',
-    'NAND3x2',
-    'NOR2xp67',
-    'OR2x6',
+    'AN4D0BWP30P140',
+    'ND3D0BWP30P140',
+    'NR3D1BWP30P140',
+    'OR4D0BWP30P140',
+    'XNR3D1BWP30P140',
+    'XOR3D1BWP30P140',
 ]
 
-# Based on dataset_ASAP7/test_topology_agnostic/
-TOPOLOGY_AGNOSTIC_CELLS = [
-    'FAx1',
-    'HAxp5',
-    'MAJIxp5',
-    'MAJx2',
-    'MAJx3',
-    'XNOR2x1',
-    'XNOR2x2',
-    'XNOR2xp5',
-    'XOR2x1',
-    'XOR2x2',
-    'XOR2xp5',
-]
+TOPOLOGY_AGNOSTIC_CELLS = ['OA21D0BWP30P140', 'OA21D1BWP30P140', 'OA211D0BWP30P140', 'OA211D1BWP30P140',
+                            'IOA21D0BWP30P140', 'IOA21D1BWP30P140', 'HA1D0BWP30P140', 'FA1D0BWP30P140', 
+                          'IAO21D0BWP30P140', 'IAO21D1BWP30P140', 'AO21D0BWP30P140', 'AO21D1BWP30P140',
+                          'AO211D0BWP30P140', 'AO211D1BWP30P140', 'SDFSNQD0BWP30P140', 'DFCNQD1BWP30P140']
 
 
-def normalize_node_features(node_features, norm_stats):
+def normalize_node_features(node_features, norm_stats, temp_mode='typical'):
     """
     Normalize node features using saved statistics.
-    For ASAP7 Process (11D):
-    - Columns 0-3: One-hot node type (not normalized)
-    - Column 4: voltage
-    - Column 5: input_slew
-    - Column 6: output_load
-    - Columns 7-10: process params (param_a, param_b, param_c, temperature)
+    Only normalize voltage (col 4), input_slew (col 5), output_load (col 6), temperature (col 10 for 11D)
     Supports both zscore (mean/std) and minmax (min/max/epsilon) normalization.
+
+    Args:
+        node_features: Node feature tensor
+        norm_stats: Normalization statistics
+        temp_mode: 'temp_all' to normalize all nodes, 'typical' to normalize MOS nodes only
     """
     if norm_stats is None:
         return node_features
 
     normalized = node_features.clone()
-
-    # Get nested norm_stats if needed
-    node_norm = norm_stats.get('node_features', norm_stats)
+    node_norm = norm_stats['node_features']
 
     # Helper function to apply normalization based on stats structure
     def apply_norm(values, stats):
@@ -155,63 +143,37 @@ def normalize_node_features(node_features, norm_stats):
             return (values - stats['mean']) / stats['std']
 
     # Normalize voltage (column 4)
-    if 'voltage' in node_norm:
-        voltage_mask = normalized[:, 4] != 0
-        if voltage_mask.any():
-            normalized[voltage_mask, 4] = apply_norm(
-                normalized[voltage_mask, 4], node_norm['voltage']
-            )
+    voltage_mask = normalized[:, 4] != 0
+    if voltage_mask.any():
+        normalized[voltage_mask, 4] = apply_norm(
+            normalized[voltage_mask, 4], node_norm['voltage']
+        )
 
     # Normalize input_slew (column 5)
-    if 'input_slew' in node_norm:
-        slew_mask = normalized[:, 5] != 0
-        if slew_mask.any():
-            normalized[slew_mask, 5] = apply_norm(
-                normalized[slew_mask, 5], node_norm['input_slew']
-            )
+    slew_mask = normalized[:, 5] != 0
+    if slew_mask.any():
+        normalized[slew_mask, 5] = apply_norm(
+            normalized[slew_mask, 5], node_norm['input_slew']
+        )
 
     # Normalize output_load (column 6)
-    if 'output_load' in node_norm:
-        load_mask = normalized[:, 6] != 0
-        if load_mask.any():
-            normalized[load_mask, 6] = apply_norm(
-                normalized[load_mask, 6], node_norm['output_load']
-            )
+    load_mask = normalized[:, 6] != 0
+    if load_mask.any():
+        normalized[load_mask, 6] = apply_norm(
+            normalized[load_mask, 6], node_norm['output_load']
+        )
 
-    # Normalize process params if available (columns 7-9: param_a, param_b, param_c)
-    process_params = ['param_a', 'param_b', 'param_c']
-    for i, param_name in enumerate(process_params):
-        col_idx = 7 + i
-        if param_name in node_norm and normalized.shape[1] > col_idx:
-            param_mask = normalized[:, col_idx] != 0
-            if param_mask.any():
-                normalized[param_mask, col_idx] = apply_norm(
-                    normalized[param_mask, col_idx], node_norm[param_name]
-                )
-
-    # Normalize temperature (column 10) if available
-    # Detect temp_all vs mos_only mode:
-    # - mos_only: only MOS nodes have temperature (non-MOS nodes have temp=0)
-    # - temp_all: all nodes have temperature values
+    # Normalize temperature (column 10 for 11D features) if available
     if 'temperature' in node_norm and normalized.shape[1] > 10:
         temp_values = normalized[:, 10]
         temp_stats = node_norm['temperature']
-        mosfet_mask = normalized[:, 2] != 0  # MOSFET nodes (PMOS=+1, NMOS=-1)
-        non_mosfet_mask = normalized[:, 2] == 0  # Non-MOSFET nodes
 
-        # Check if mode is stored in norm_stats, otherwise detect from data
-        if 'mode' in temp_stats:
-            is_temp_all = temp_stats['mode'] == 'temp_all'
-        else:
-            # Fallback: detect from data (check if non-MOS nodes have temp values)
-            non_mos_temps = temp_values[non_mosfet_mask]
-            is_temp_all = non_mos_temps.abs().max() > 1e-6 if non_mosfet_mask.any() else False
-
-        if is_temp_all:
+        if temp_mode == 'temp_all':
             # temp_all mode: normalize all nodes
             normalized[:, 10] = apply_norm(temp_values, temp_stats)
         else:
-            # mos_only mode: only normalize MOS nodes
+            # typical/mos_only mode: only normalize MOS nodes
+            mosfet_mask = normalized[:, 2] != 0  # MOSFET nodes (PMOS=+1, NMOS=-1)
             if mosfet_mask.any():
                 normalized[mosfet_mask, 10] = apply_norm(
                     normalized[mosfet_mask, 10], temp_stats
@@ -222,12 +184,7 @@ def normalize_node_features(node_features, norm_stats):
 
 class CellTestDataset:
     """
-    Dataset class for loading per-cell test data.
-    Adapted for ASAP7 Process dataset format using minimal_data_per_file structure.
-
-    Data format:
-    - minimal_data_per_file: [num_libs][num_tasks] - list of lists
-    - Each task: {'node_features': tensor, 'output': float, 'delay_type': str, ...}
+    Dataset class for loading per-cell test data with mmap.
     """
     def __init__(self, cell_path, topology_cache=None):
         self.cell_path = cell_path
@@ -235,43 +192,44 @@ class CellTestDataset:
         self._load_data()
 
     def _load_data(self):
-        """Load cell test data from minimal_data_per_file format"""
-        data = torch.load(self.cell_path, weights_only=False, map_location='cpu')
+        """Load cell test data with mmap"""
+        data = torch.load(self.cell_path, weights_only=False, map_location='cpu', mmap=True)
 
-        # minimal_data_per_file: [num_libs][num_tasks] - list of lists
-        self._minimal_data = data['minimal_data_per_file']
-        self.num_libs = data['num_lib_files']
+        self._node_features = data['node_features']  # [num_libs, total_nodes, num_features]
+        self._outputs = data['outputs']  # [num_libs, num_tasks]
+        self._node_slices = data['node_slices']  # [num_tasks + 1]
+        self._cell_name = data['cell_name']
+        self._delay_types = data.get('delay_types', None)  # [num_tasks]
+        self._output_names = data.get('output_names', None)  # [num_tasks]
+
+        self.num_libs = data['num_libs']
         self.num_tasks = data['num_tasks']
-        self.cell_name = data.get('cell_name', '')
-
-        # Get cell name with suffix from first sample if not in data
-        if not self.cell_name and self._minimal_data and self._minimal_data[0]:
-            first_sample = self._minimal_data[0][0]
-            self.cell_name = first_sample.get('cell_name', '')
+        self.total_nodes = data['total_nodes']
+        self.cell_name = data['cell_name']
 
     def get_task_data(self, task_idx, lib_idx, clone=True):
         """Get data for a specific task and lib."""
-        sample = self._minimal_data[lib_idx][task_idx]
+        node_start = self._node_slices[task_idx].item()
+        node_end = self._node_slices[task_idx + 1].item()
 
-        node_features = sample['node_features']
-        if clone and torch.is_tensor(node_features):
+        node_features = self._node_features[lib_idx, node_start:node_end, :]
+        if clone:
             node_features = node_features.clone()
-        elif not torch.is_tensor(node_features):
-            node_features = torch.tensor(node_features, dtype=torch.float32)
 
-        output = sample['output']
-        if torch.is_tensor(output):
-            output = output.item()
+        output = self._outputs[lib_idx, task_idx].item()
 
-        # Get delay_type and output_name from sample
-        delay_type = sample.get('delay_type', 'rise')
-        output_name = sample.get('output_name', '')
-        cell_name = sample.get('cell_name', self.cell_name)
+        # Get delay_type and output_name for this task
+        delay_type = 'rise'  # Default
+        output_name = ''  # Default
+        if self._delay_types is not None:
+            delay_type = self._delay_types[task_idx]
+        if self._output_names is not None:
+            output_name = self._output_names[task_idx]
 
         return {
             'node_features': node_features,
             'output': output,
-            'cell_name': cell_name,
+            'cell_name': self._cell_name,
             'delay_type': delay_type,
             'output_name': output_name,
         }
@@ -288,14 +246,7 @@ class CellTestDataset:
 
     def get_task_outputs(self, task_idx):
         """Get all lib outputs for a specific task (for continuity checking)."""
-        outputs = []
-        for lib_idx in range(self.num_libs):
-            sample = self._minimal_data[lib_idx][task_idx]
-            output = sample['output']
-            if torch.is_tensor(output):
-                output = output.item()
-            outputs.append(output)
-        return torch.tensor(outputs, dtype=torch.float32)
+        return self._outputs[:, task_idx]
 
 
 def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, device):
@@ -304,24 +255,28 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
     """
     print(f"\n   Processing cell: {cell_name}")
 
-    # Load cell test data - ASAP7 specific path pattern
-    cell_filename = f"{args.data_type}_{cell_name}_ASAP7_75t_L_graph_data_{args.graph_mode}.pth"
-    # Directory includes data_type to separate cell vs transition test data
-    # Build suffixes for test directory (must match dataset generation)
+    # Load cell test data (directory includes data_type to separate cell vs transition)
+    # Add voltage_mode suffix to directory if not all_nodes (e.g., _vdd_only, _vdd_mos)
+    # Add topology_suffix for inputport (inputport affects node features)
     topology_suffix = "_inputport" if args.inputport else ""
-    voltage_suffix = "_vdd_only" if args.voltage_mode == "vdd_only" else ("_vdd_mos" if args.voltage_mode == "vdd_mos" else "")
+    # Add voltage_mode and temp_mode suffixes
+    voltage_suffix = f"_{args.voltage_mode}" if args.voltage_mode != "all_nodes" else ""
+    temp_suffix = "_temp_all" if args.temp_mode == "temp_all" else ""
     slew_suffix = "_relpin" if args.related_pin_only else ""
+    test_dir = f"test_by_{args.data_type}_{args.graph_mode}{topology_suffix}{voltage_suffix}{temp_suffix}{slew_suffix}"
     cell_path = os.path.join(
         args.dataset_dir,
-        f"test_by_{args.data_type}_{args.graph_mode}{voltage_suffix}{slew_suffix}",
-        cell_filename
+        test_dir,
+        f"{cell_name}.pth"
     )
-    print(cell_path)
+    print(f"   Test directory: {test_dir}")
+
     if not os.path.exists(cell_path):
         print(f"   Cell data not found: {cell_path}")
         return None
 
     cell_dataset = CellTestDataset(cell_path, topology_cache)
+    print(f"   Test data: {os.path.basename(os.path.dirname(cell_path))}/{cell_name}.pth")
     print(f"   Loaded: {cell_dataset.num_tasks} tasks, {cell_dataset.num_libs} libs")
 
     # Set mode-dependent default indices
@@ -386,22 +341,9 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
             task_samples, task_outputs = cell_dataset.get_all_libs_for_task(randomtask, clone=True)
             task_outputs_tensor = torch.tensor(task_outputs, dtype=torch.float32)
 
-            # Debug: Print info for first task
-            if i <10:
-                print(f"      task debug info:")
-                print(f"       Num samples: {len(task_samples)}")
-                if len(task_samples) > 0:
-                    sample = task_samples[0]
-                    print(f"       Node features shape: {sample['node_features'].shape}")
-                    print(f"       Sample keys: {list(sample.keys())}")
-                    if 'output_name' in sample:
-                        print(f"       Output name: {sample['output_name']}")
-                    if 'delay_type' in sample:
-                        print(f"       Delay type: {sample['delay_type']}")
-
             # Apply normalization
             for sample in task_samples:
-                sample['node_features'] = normalize_node_features(sample['node_features'], norm_stats)
+                sample['node_features'] = normalize_node_features(sample['node_features'], norm_stats, args.temp_mode)
 
             # Get support set samples
             X_samples = [task_samples[idx] for idx in indices]
@@ -419,15 +361,13 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
             if y_std > 0:
                 y_norm = (y - y_mean) / y_std
 
-                # Create center input with nominal voltage (0.7V for ASAP7)
-                NOMINAL_VOLTAGE = 0.7  # ASAP7 nominal voltage
+                # Create center input with nominal voltage (0.9V for TSMC)
+                NOMINAL_VOLTAGE = 0.9  # TSMC nominal voltage
                 center_sample = task_samples[indices[0]]
                 center_node_features = center_sample['node_features'].clone()
 
                 # Calculate normalized nominal voltage based on normalization method
-                # Handle both nested and flat norm_stats structures
-                node_norm = norm_stats.get('node_features', norm_stats)
-                voltage_stats = node_norm['voltage']
+                voltage_stats = norm_stats['node_features']['voltage']
                 if 'method' in voltage_stats and voltage_stats['method'] == 'minmax_positive':
                     # minmax: normalized = epsilon + (x - min) / (max - min) * (1 - epsilon)
                     epsilon = voltage_stats.get('epsilon', 0.01)
@@ -442,17 +382,7 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
                 center_node_features[voltage_mask, 4] = normalized_nominal
 
                 # Get adjacency matrix from topology cache
-                # For ASAP7, cell names in cache might be with full suffix
-                cache_cell_name = cell_name
-                if cache_cell_name not in topology_cache:
-                    # Try with ASAP7 suffix
-                    cache_cell_name = f"{cell_name}_ASAP7_75t_L"
-
-                if cache_cell_name not in topology_cache:
-                    print(f"   Cell {cell_name} not found in topology cache")
-                    continue
-
-                cell_cache = topology_cache[cache_cell_name]
+                cell_cache = topology_cache[cell_name]
 
                 if args.graph_mode == 'stage_aware':
                     output_name = center_sample.get('output_name', '')
@@ -476,17 +406,6 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
                     adjacency_matrix = cell_cache['adjacency_matrix']
 
                 edge_index = adjacency_matrix.nonzero().t()
-
-                # Debug: Check for index mismatch on first task
-                if i == 0:
-                    num_nodes = center_node_features.shape[0]
-                    print(f"       Adjacency matrix shape: {adjacency_matrix.shape}")
-                    print(f"       Edge index shape: {edge_index.shape}")
-                    if edge_index.numel() > 0:
-                        print(f"       Edge index max: {edge_index.max().item()}, Num nodes: {num_nodes}")
-                        if edge_index.max().item() >= num_nodes:
-                            print(f"       WARNING: edge_index max ({edge_index.max().item()}) >= num_nodes ({num_nodes})")
-
                 center_data = Data(x=center_node_features, edge_index=edge_index)
                 center_batch = Batch.from_data_list([center_data]).to(device)
 
@@ -523,7 +442,7 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
                         true_samples, true_function, grad, move,
                         topology_cache, args.graph_mode, norm_stats, normalize_node_features,
                         left_bound=left_bound, right_bound=right_bound, total_points=args.total_points,
-                        mode=args.mode
+                        mode=args.mode, adaptation_method=args.adaptation_method
                     )
 
                     if adam_used:
@@ -550,26 +469,6 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
         except Exception as e:
             if i < 5:
                 print(f"     Error task {randomtask}: {e}")
-                # Debug info
-                try:
-                    print(f"       Debug info:")
-                    print(f"         Cell: {cell_name}, Cache cell: {cache_cell_name if 'cache_cell_name' in dir() else 'N/A'}")
-                    if 'task_samples' in dir() and len(task_samples) > 0:
-                        sample = task_samples[0]
-                        print(f"         Node features shape: {sample['node_features'].shape}")
-                        print(f"         Node features dtype: {sample['node_features'].dtype}")
-                        if 'edge_index' in dir():
-                            print(f"         Edge index shape: {edge_index.shape}")
-                            print(f"         Edge index max: {edge_index.max().item() if edge_index.numel() > 0 else 'empty'}")
-                            print(f"         Num nodes: {sample['node_features'].shape[0]}")
-                            if edge_index.numel() > 0 and edge_index.max().item() >= sample['node_features'].shape[0]:
-                                print(f"         WARNING: edge_index max ({edge_index.max().item()}) >= num_nodes ({sample['node_features'].shape[0]})")
-                        if 'adjacency_matrix' in dir():
-                            print(f"         Adjacency matrix shape: {adjacency_matrix.shape}")
-                        if 'output_name' in dir():
-                            print(f"         Output name: {output_name}, Delay type: {delay_type if 'delay_type' in dir() else 'N/A'}")
-                except Exception as debug_e:
-                    print(f"       Debug error: {debug_e}")
             continue
 
     if len(total_nrmse) == 0:
@@ -595,13 +494,13 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
 
 def main():
     parser = argparse.ArgumentParser(
-        description='ASAP7 GCN Topology Validation',
+        description='TSMC GCN Topology Validation',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python ASAP7_GCN_topology_validation.py --experiment intra_topology --model_type maml --gpu 0
-  python ASAP7_GCN_topology_validation.py --experiment topology_agnostic --model_type maml --gpu 1
-  python ASAP7_GCN_topology_validation.py --experiment intra_topology --model_type maml --mode interpolation
+  python TSMC_GCN_topology_validation.py --experiment intra_topology --model_type baseline --gpu 0
+  python TSMC_GCN_topology_validation.py --experiment topology_agnostic --model_type maml --gpu 1
+  python TSMC_GCN_topology_validation.py --experiment intra_topology --model_type maml --mode interpolation
         """
     )
 
@@ -616,11 +515,11 @@ Examples:
     # Model configuration
     parser.add_argument('--model_path', type=str, default=None,
                         help='Custom model checkpoint path')
-    parser.add_argument('--conv_hidden_dim', type=int, default=64,
-                        help='Convolution layer hidden dimension (default: 64)')
+    parser.add_argument('--conv_hidden_dim', type=int, default=32,
+                        help='Convolution layer hidden dimension (default: 128)')
     parser.add_argument('--num_conv_layers', type=int, default=2,
-                        help='Number of GCN convolutional layers (default: 2)')
-    parser.add_argument('--fc_hidden_dim', type=int, default=128,
+                        help='Number of GCN convolutional layers (default: 3)')
+    parser.add_argument('--fc_hidden_dim', type=int, default=256,
                         help='FC layer hidden dimension (default: 128)')
     parser.add_argument('--num_fc_layers', type=int, default=2,
                         help='Number of FC layers (default: 2)')
@@ -634,37 +533,29 @@ Examples:
 
     # Data configuration
     parser.add_argument('--dataset_dir', type=str,
-                        default='/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/GNN_dataset_ASAP7',
+                        default='/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/GNN_dataset_TSMC',
                         help='Dataset directory')
     parser.add_argument('--data_type', type=str, default='cell',
                         choices=['cell', 'transition'],
                         help='Data type (default: cell)')
-    parser.add_argument('--graph_mode', type=str, default='stage_aware',
+    parser.add_argument('--graph_mode', type=str, default='full_graph',
                         choices=['stage_aware', 'full_graph'],
-                        help='Graph mode (default: stage_aware)')
+                        help='Graph mode (default: full_graph)')
     parser.add_argument('--voltage_mode', type=str, default='all_nodes',
                         choices=['all_nodes', 'vdd_only', 'vdd_mos'],
-                        help='Voltage mode (default: all_nodes)')
+                        help='Voltage mode: all_nodes (voltage on all nodes), vdd_only (voltage only on VDD), or vdd_mos (voltage on VDD and MOS nodes) (default: all_nodes)')
     parser.add_argument('--normalization', type=str, default='zscore',
                         choices=['zscore', 'minmax'],
-                        help='Normalization method (default: zscore)')
+                        help='Normalization method: zscore (default) or minmax')
     parser.add_argument('--temp_mode', type=str, default='typical',
                         choices=['typical', 'temp_all'],
-                        help='Temperature mode (default: typical)')
+                        help='Temperature mode: typical (temp on MOS only) or temp_all (temp on all nodes) (default: typical)')
     parser.add_argument('--cache_path', type=str, default=None,
-                        help='Path to topology cache file (overrides cache from train_data)')
+                        help='Override topology cache path (default: use cache_path stored in dataset file)')
     parser.add_argument('--inputport', action='store_true',
-                        help='Use inputport topology (adds _inputport suffix)')
+                        help='Use inputport topology (checkpoint dir includes _inputport suffix)')
     parser.add_argument('--related_pin_only', action='store_true',
                         help='Use related_pin_only slew assignment (adds _relpin suffix)')
-    parser.add_argument('--sample_suffix', type=str, default='_10pct',
-                        help='Train data sampling suffix (e.g., _10pct, _5pct, or empty string for full data)')
-    parser.add_argument('--adaptation_method', type=str, default='selective_adam',
-                        choices=['selective_adam', 'adam'],
-                        help='Adaptation method (default: selective_adam)')
-    parser.add_argument('--output_dir', type=str, default='final',
-                        choices=['final', 'test'],
-                        help='Output directory: final or test (default: final)')
 
     # Sampling configuration
     parser.add_argument('--indices', type=int, nargs='+', default=None,
@@ -685,13 +576,13 @@ Examples:
                         help='Tasks per meta batch for MAML (default: 16)')
     parser.add_argument('--inner_steps', type=int, default=1,
                         help='Inner steps for MAML (default: 1)')
-    parser.add_argument('--num_iterations', type=int, default=300000,
-                        help='Pretraining iterations (default: 300000)')
+    parser.add_argument('--num_iterations', type=int, default=100000,
+                        help='Pretraining iterations (default: 100000)')
 
     # Results saving
     parser.add_argument('--save_results', action='store_true',
                         help='Save prediction results to .npy files')
-    parser.add_argument('--output_prefix', type=str, default='ASAP7_GCN',
+    parser.add_argument('--output_prefix', type=str, default='TSMC_GCN',
                         help='Prefix for output files')
 
     # Cell selection
@@ -703,6 +594,15 @@ Examples:
                         help='Filter test tasks to only use continuous data (adds _filtered suffix to output)')
     parser.add_argument('--continuity_threshold', type=float, default=0.18,
                         help='Threshold ratio for continuity check (default: 0.18)')
+
+    # Adaptation method
+    parser.add_argument('--adaptation_method', type=str, default='selective_adam',
+                        choices=['selective_adam', 'adam'],
+                        help='Adaptation method: selective_adam (Adam if loss>1e-4) or adam (always Adam) (default: selective_adam)')
+
+    # Output directory
+    parser.add_argument('--output_dir', type=str, default='final',
+                        help='Output directory mode: "final" for data_result_npy_directory_final, otherwise data_result_npy_directory (default: final)')
 
     args = parser.parse_args()
 
@@ -720,7 +620,7 @@ Examples:
         cell_list = TOPOLOGY_AGNOSTIC_CELLS
 
     print(f"\n{'='*80}")
-    print(f"ASAP7 GCN Topology Validation")
+    print(f"TSMC GCN Topology Validation")
     print(f"{'='*80}")
     print(f"Experiment: {args.experiment}")
     print(f"Model type: {args.model_type}")
@@ -732,67 +632,37 @@ Examples:
     print(f"Mode: {args.mode}")
     print(f"Pooling: {args.pooling}")
     print(f"Adaptation method: {args.adaptation_method}")
-    print(f"Output dir: {args.output_dir}")
-    if args.inputport:
-        print(f"Inputport: enabled")
-    if args.related_pin_only:
-        print(f"Related pin only: enabled")
-    print(f"Sample suffix: {args.sample_suffix}")
     print(f"Cells: {len(cell_list)} cells")
     print(f"{'='*80}")
 
-    # Build suffixes based on configuration
+    # Load train data to get norm_stats and cache_path
+    # Add topology_suffix for inputport (inputport affects node features, gatectrl only affects cache)
     topology_suffix = "_inputport" if args.inputport else ""
-    voltage_suffix = "_vdd_only" if args.voltage_mode == "vdd_only" else ("_vdd_mos" if args.voltage_mode == "vdd_mos" else "")
+    # Add voltage_mode suffix if not all_nodes, _minmax suffix if normalization is minmax
+    voltage_suffix = f"_{args.voltage_mode}" if args.voltage_mode != "all_nodes" else ""
     norm_suffix = "_minmax" if args.normalization == "minmax" else ""
-    temp_suffix = "_tempall" if args.temp_mode == "temp_all" else ""
+    temp_suffix = "_temp_all" if args.temp_mode == "temp_all" else ""
     slew_suffix = "_relpin" if args.related_pin_only else ""
-
-    # Build checkpoint suffix from cache filename if provided
-    # Supported: _gatectrl, _bidir, _directmos (only affect adjacency matrix, not node features)
-    checkpoint_suffix = ""
-    if args.cache_path:
-        cache_basename = os.path.basename(args.cache_path)
-        if "_gatectrl" in cache_basename:
-            checkpoint_suffix += "_gatectrl"
-        if "_bidir" in cache_basename:
-            checkpoint_suffix += "_bidir"
-        if "_directmos" in cache_basename:
-            checkpoint_suffix += "_directmos"
-    checkpoint_suffix += topology_suffix
-
-    # Load train data to get norm_stats
-    # ASAP7 dataset naming: train_{data_type}_{graph_mode}{topology_suffix}{slew_suffix}{sample_suffix}.pth
-    sample_suffix = args.sample_suffix
-    train_path = os.path.join(args.dataset_dir, f"train_{args.data_type}_{args.graph_mode}{topology_suffix}{slew_suffix}{sample_suffix}.pth")
+    train_path = os.path.join(args.dataset_dir, f"train_{args.data_type}_{args.graph_mode}{topology_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}.pth")
     print(f"\nLoading train data for norm_stats: {train_path}", flush=True)
 
     if not os.path.exists(train_path):
-        # Try without slew_suffix
-        train_path_no_slew = os.path.join(args.dataset_dir, f"train_{args.data_type}_{args.graph_mode}{topology_suffix}{sample_suffix}.pth")
-        if os.path.exists(train_path_no_slew):
-            print(f"Using train path without slew suffix: {train_path_no_slew}", flush=True)
-            train_path = train_path_no_slew
-        else:
-            # Try legacy path without topology suffix
-            train_path_legacy = os.path.join(args.dataset_dir, f"train_{args.data_type}_{args.graph_mode}{sample_suffix}.pth")
-            if os.path.exists(train_path_legacy):
-                print(f"Using legacy train path: {train_path_legacy}", flush=True)
-                train_path = train_path_legacy
-            else:
-                print(f"Train data not found: {train_path}")
-                return 1
+        print(f"Train data not found: {train_path}")
+        return 1
 
     print("Loading train_data with mmap...", flush=True)
     train_data = torch.load(train_path, weights_only=False, map_location='cpu', mmap=True)
     print("train_data loaded.", flush=True)
     norm_stats = train_data.get('norm_stats', None)
-    cache_path_from_data = train_data.get('cache_path', None)
+
+    # Use cache_path override if provided, otherwise from dataset file
+    if args.cache_path:
+        cache_path = args.cache_path
+        print(f"Using cache_path override: {cache_path}")
+    else:
+        cache_path = train_data.get('cache_path', None)
 
     print(f"Norm stats loaded: {norm_stats is not None}")
-
-    # Use cache_path from argument if provided, otherwise from train_data
-    cache_path = args.cache_path if args.cache_path else cache_path_from_data
 
     # Load topology cache
     if cache_path:
@@ -818,12 +688,35 @@ Examples:
         pool_suffix = f"_pool{args.pooling}" if args.pooling != 'mean' else ""
         arch_suffix = f"_conv{args.conv_hidden_dim}x{args.num_conv_layers}_fc{args.fc_hidden_dim}x{args.num_fc_layers}{pool_suffix}"
 
+        # Extract cache suffix from cache_path (gatectrl/bidir/directmos only affect adjacency, not train data)
+        cache_suffix = ""
+        if args.cache_path:
+            if "_gatectrl" in args.cache_path:
+                cache_suffix += "_gatectrl"
+            if "_bidir" in args.cache_path:
+                cache_suffix += "_bidir"
+            if "_directmos" in args.cache_path:
+                cache_suffix += "_directmos"
+        # Add inputport suffix if flag is set (inputport affects node features)
+        topology_suffix = "_inputport" if args.inputport else ""
+        # checkpoint_suffix: combines cache_suffix (gatectrl) + topology_suffix (inputport)
+        checkpoint_suffix = cache_suffix + topology_suffix
+
+        # Add voltage_mode suffix if not all_nodes
+        voltage_suffix = f"_{args.voltage_mode}" if args.voltage_mode != "all_nodes" else ""
+        # Add minmax suffix if normalization is minmax
+        norm_suffix = "_minmax" if args.normalization == "minmax" else ""
+        # Add temp_all suffix if temp_mode is temp_all
+        temp_suffix = "_temp_all" if args.temp_mode == "temp_all" else ""
+        # Add relpin suffix if related_pin_only is set
+        slew_suffix = "_relpin" if args.related_pin_only else ""
+
         if args.model_type == 'baseline':
-            model_dir = f"../../../pretrained_models/gnn_baseline_asap7_process_checkpoints{checkpoint_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}{sample_suffix}"
-            model_filename = f"gnn_baseline_asap7_process_{args.data_type}_{args.graph_mode}_iter{args.num_iterations}{arch_suffix}.pth"
+            model_dir = f"../../../pretrained_models/gnn_baseline_tsmc_process_checkpoints{checkpoint_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}"
+            model_filename = f"gnn_baseline_tsmc_process_{args.data_type}_{args.graph_mode}_iter{args.num_iterations}{arch_suffix}.pth"
         else:
-            model_dir = f"../../../pretrained_models/gnn_maml_asap7_process_checkpoints{checkpoint_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}{sample_suffix}"
-            model_filename = f"gnn_maml_asap7_process_{args.data_type}_{args.graph_mode}_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}.pth"
+            model_dir = f"../../../pretrained_models/gnn_maml_tsmc_process_checkpoints{checkpoint_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}"
+            model_filename = f"gnn_maml_tsmc_process_{args.data_type}_{args.graph_mode}_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}.pth"
 
         model_path = os.path.join(model_dir, model_filename)
     else:
@@ -849,8 +742,9 @@ Examples:
     num_conv_layers = config.get('num_conv_layers', args.num_conv_layers)
     fc_hidden_dim = config.get('fc_hidden_dim', args.fc_hidden_dim)
     num_fc_layers = config.get('num_fc_layers', args.num_fc_layers)
-    node_features = config.get('node_features', 11)  # ASAP7 Process: 11D
 
+    # Get node_features from checkpoint weight shape
+    node_features = checkpoint['model_state_dict']['convs.0.lin.weight'].shape[1]
     print(f"Detected node_features from checkpoint: {node_features}")
 
     # Get pooling from checkpoint config or use argument
@@ -929,26 +823,31 @@ Examples:
         # Add related_pin_only suffix
         relpin_suffix = "_relpin" if args.related_pin_only else ""
 
-        # Determine output directory based on output_dir argument
-        output_dir_name = "data_result_npy_directory_final" if args.output_dir == "final" else "data_result_npy_directory"
-
         for result in all_results:
             cell_name = result['cell_name']
 
+            # Add adaptation method suffix only for 'adam' (selective_adam is default, no suffix)
+            adapt_suffix = "_adam" if args.adaptation_method == 'adam' else ""
+
             if args.model_type == 'baseline':
-                base_name = f"{args.output_prefix}_{args.experiment}_{cell_name}_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}_iter{args.num_iterations}{arch_suffix}{filter_suffix}{voltage_suffix}{relpin_suffix}"
+                base_name = f"{args.output_prefix}_{args.experiment}_{cell_name}_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}_iter{args.num_iterations}{arch_suffix}{filter_suffix}{voltage_suffix}{relpin_suffix}{adapt_suffix}"
             else:
-                base_name = f"{args.output_prefix}_{args.experiment}_{cell_name}_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}{filter_suffix}{voltage_suffix}{relpin_suffix}"
+                base_name = f"{args.output_prefix}_{args.experiment}_{cell_name}_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}{filter_suffix}{voltage_suffix}{relpin_suffix}{adapt_suffix}"
 
-            pred_filename = f"{output_dir_name}/{base_name}_pred.npy"
-            act_filename = f"{output_dir_name}/{base_name}_act.npy"
+            # Determine output directory based on output_dir argument
+            output_dir = "data_result_npy_directory_final" if args.output_dir == "final" else "data_result_npy_directory"
 
-            os.makedirs(output_dir_name, exist_ok=True)
+            pred_filename = f"{output_dir}/{base_name}_pred.npy"
+            act_filename = f"{output_dir}/{base_name}_act.npy"
+
+            os.makedirs(output_dir, exist_ok=True)
 
             np.save(pred_filename, result['predictions'])
             np.save(act_filename, result['actuals'])
 
-        print(f"\nSaved results to {output_dir_name}/")
+        # Determine output directory for print message
+        output_dir = "data_result_npy_directory_final" if args.output_dir == "final" else "data_result_npy_directory"
+        print(f"\nSaved results to {output_dir}/")
 
     return 0 if failed == 0 else 1
 

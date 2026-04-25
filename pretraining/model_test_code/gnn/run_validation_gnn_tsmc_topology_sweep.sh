@@ -1,6 +1,6 @@
 #!/bin/bash
-# GNN Validation Sweep for TSMC Dataset
-# Runs validation across corner-temperature combinations and architectures
+# GNN Topology Validation Sweep for TSMC Dataset
+# Runs validation across experiment types (intra_topology/topology_agnostic) and architectures
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
@@ -10,11 +10,10 @@ if [ $# -lt 1 ]; then
     echo "Usage: $0 <config.json> [--dry-run]"
     echo ""
     echo "Example:"
-    echo "  $0 json_configs/validation_gnn_tsmc_sweep_config.json"
-    echo "  $0 json_configs/validation_gnn_tsmc_sweep_config.json --dry-run"
+    echo "  $0 json_configs/validation_gnn_topology_sweep_config.json"
+    echo "  $0 json_configs/validation_gnn_topology_sweep_config.json --dry-run"
     echo ""
-    echo "Note: Requires unified test dataset to be pre-generated."
-    echo "      Run split_gnn_dataset_tsmc.py --corner <C> --temperature <T> first."
+    echo "Note: Requires TSMC GNN unified dataset to be pre-generated."
     exit 1
 fi
 
@@ -43,7 +42,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 echo "=========================================="
-echo "GNN Validation - TSMC Dataset Sweep"
+echo "GNN Topology Validation - TSMC Dataset Sweep"
 echo "=========================================="
 echo "Config file: $CONFIG_FILE"
 echo ""
@@ -53,6 +52,12 @@ EXPERIMENT_NAME=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))
 MODEL_TYPE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['model_type'])")
 DATA_TYPE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['data_type'])")
 GRAPH_MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['graph_mode'])")
+VOLTAGE_MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('voltage_mode', 'all_nodes'))")
+NORMALIZATION=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('normalization', 'zscore'))")
+TEMP_MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('temp_mode', 'typical'))")
+CACHE_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('cache_path', ''))")
+INPUTPORT=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('--inputport' if c.get('inputport', False) else '')")
+RELATED_PIN_ONLY=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('--related_pin_only' if c.get('related_pin_only', False) else '')")
 MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['mode'])")
 TOTAL_POINTS=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['total_points'])")
 NUM_TEST_SAMPLES=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['num_test_samples'])")
@@ -60,6 +65,11 @@ NUM_ITERATIONS=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))[
 SAVE_RESULTS=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('--save_results' if c.get('save_results', False) else '')")
 FILTER_CONTINUOUS=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('--filter_continuous' if c.get('filter_continuous', False) else '')")
 CONTINUITY_THRESHOLD=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('continuity_threshold', 0.18))")
+POOLING=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('pooling', 'mean'))")
+ADAPTATION_METHOD=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('adaptation_method', 'selective_adam'))")
+DATASET_DIR=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('dataset_dir', ''))")
+OUTPUT_PREFIX=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('output_prefix', 'TSMC_GCN'))")
+OUTPUT_DIR=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('output_dir', 'final'))")
 GPU=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['gpu'])")
 
 # MAML-specific params (only used if model_type is maml)
@@ -67,9 +77,8 @@ INNERDIV=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('m
 TASKS_PER_META_BATCH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('maml_config', {}).get('tasks_per_meta_batch', 16))")
 INNER_STEPS=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE')).get('maml_config', {}).get('inner_steps', 1))")
 
-# Get sweep parameters (TSMC: corner and temperature instead of process and corner)
-CORNERS=$(python3 -c "import json; print(' '.join(json.load(open('$CONFIG_FILE'))['sweep_params']['corner']))")
-TEMPERATURES=$(python3 -c "import json; print(' '.join(map(str, json.load(open('$CONFIG_FILE'))['sweep_params']['temperature'])))")
+# Get sweep parameters
+EXPERIMENTS=$(python3 -c "import json; print(' '.join(json.load(open('$CONFIG_FILE'))['sweep_params']['experiment']))")
 CONV_HIDDEN_DIMS=$(python3 -c "import json; print(' '.join(map(str, json.load(open('$CONFIG_FILE'))['sweep_params']['conv_hidden_dim'])))")
 NUM_CONV_LAYERS=$(python3 -c "import json; print(' '.join(map(str, json.load(open('$CONFIG_FILE'))['sweep_params']['num_conv_layers'])))")
 FC_HIDDEN_DIMS=$(python3 -c "import json; print(' '.join(map(str, json.load(open('$CONFIG_FILE'))['sweep_params']['fc_hidden_dim'])))")
@@ -82,7 +91,7 @@ import itertools
 c = json.load(open('$CONFIG_FILE'))
 s = c['sweep_params']
 combos = list(itertools.product(
-    s['corner'], s['temperature'],
+    s['experiment'],
     s['conv_hidden_dim'], s['num_conv_layers'],
     s['fc_hidden_dim'], s['num_fc_layers']
 ))
@@ -93,12 +102,40 @@ echo "Experiment: $EXPERIMENT_NAME"
 echo "Model type: $MODEL_TYPE"
 echo "Data type: $DATA_TYPE"
 echo "Graph mode: $GRAPH_MODE"
+echo "Voltage mode: $VOLTAGE_MODE"
+echo "Normalization: $NORMALIZATION"
+echo "Temp mode: $TEMP_MODE"
+if [ -n "$CACHE_PATH" ]; then
+    echo "Cache path: $CACHE_PATH"
+    # Display topology cache options detected from cache_path
+    if [[ "$CACHE_PATH" == *"_gatectrl"* ]]; then
+        echo "  - gatectrl: enabled"
+    fi
+    if [[ "$CACHE_PATH" == *"_bidir"* ]]; then
+        echo "  - bidir: enabled"
+    fi
+    if [[ "$CACHE_PATH" == *"_directmos"* ]]; then
+        echo "  - directmos: enabled (skip intermediate nodes)"
+    fi
+fi
+if [ -n "$INPUTPORT" ]; then
+    echo "Inputport: enabled"
+fi
+if [ -n "$RELATED_PIN_ONLY" ]; then
+    echo "Related pin only: enabled"
+fi
 echo "Mode: $MODE"
+echo "Pooling: $POOLING"
+echo "Adaptation method: $ADAPTATION_METHOD"
+if [ -n "$DATASET_DIR" ]; then
+    echo "Dataset dir: $DATASET_DIR"
+fi
+echo "Output prefix: $OUTPUT_PREFIX"
+echo "Output dir: $OUTPUT_DIR"
 echo "GPU: $GPU"
 echo ""
 echo "Sweep parameters:"
-echo "  Corners: $CORNERS"
-echo "  Temperatures: $TEMPERATURES"
+echo "  Experiments: $EXPERIMENTS"
 echo "  Conv hidden dims: $CONV_HIDDEN_DIMS"
 echo "  Num conv layers: $NUM_CONV_LAYERS"
 echo "  FC hidden dims: $FC_HIDDEN_DIMS"
@@ -120,27 +157,43 @@ c = json.load(open('$CONFIG_FILE'))
 s = c['sweep_params']
 
 combos = list(itertools.product(
-    s['corner'], s['temperature'],
+    s['experiment'],
     s['conv_hidden_dim'], s['num_conv_layers'],
     s['fc_hidden_dim'], s['num_fc_layers']
 ))
 
-for i, (corner, temp, conv_dim, conv_layers, fc_dim, fc_layers) in enumerate(combos, 1):
-    print(f'  {i}. TSMC_{corner}_{temp} - conv{conv_dim}x{conv_layers}_fc{fc_dim}x{fc_layers}')
+for i, (exp, conv_dim, conv_layers, fc_dim, fc_layers) in enumerate(combos, 1):
+    print(f'  {i}. {exp} - conv{conv_dim}x{conv_layers}_fc{fc_dim}x{fc_layers}')
 "
+    echo ""
+    echo "Supported pooling options:"
+    echo "  - mean: Global mean pooling (default)"
+    echo "  - max: Global max pooling"
+    echo "  - add: Global sum pooling"
+    echo "  - output: Output-node-only pooling"
+    echo ""
+    echo "Supported adaptation methods:"
+    echo "  - selective_adam: Grad/Move scaling + conditional Adam (default)"
+    echo "  - adam: Direct Adam optimization (no grad/move)"
+    echo ""
+    echo "Supported topology cache options (auto-detected from cache_path):"
+    echo "  - gatectrl: Gate control edges"
+    echo "  - bidir: Bidirectional edges"
+    echo "  - directmos: Skip intermediate nodes (connect MOS directly)"
     echo ""
     echo "Dry run complete. Use without --dry-run to execute."
     exit 0
 fi
 
 # Run validation sweep
-echo "Starting validation sweep..."
+echo "Starting topology validation sweep..."
 echo "=========================================="
 echo ""
 
 START_TIME=$(date +%s)
 
 # Run each combination
+COMBO_NUM=0
 python3 -c "
 import json
 import itertools
@@ -149,26 +202,31 @@ c = json.load(open('$CONFIG_FILE'))
 s = c['sweep_params']
 
 combos = list(itertools.product(
-    s['corner'], s['temperature'],
+    s['experiment'],
     s['conv_hidden_dim'], s['num_conv_layers'],
     s['fc_hidden_dim'], s['num_fc_layers']
 ))
 
-for corner, temp, conv_dim, conv_layers, fc_dim, fc_layers in combos:
-    print(f'{corner} {temp} {conv_dim} {conv_layers} {fc_dim} {fc_layers}')
-" | while read CORNER TEMP CONV_DIM CONV_LAYERS FC_DIM FC_LAYERS; do
+for exp, conv_dim, conv_layers, fc_dim, fc_layers in combos:
+    print(f'{exp} {conv_dim} {conv_layers} {fc_dim} {fc_layers}')
+" | while read EXP CONV_DIM CONV_LAYERS FC_DIM FC_LAYERS; do
+
+    COMBO_NUM=$((COMBO_NUM + 1))
 
     echo ""
     echo "=========================================="
-    echo "Running: TSMC_${CORNER}_${TEMP} - conv${CONV_DIM}x${CONV_LAYERS}_fc${FC_DIM}x${FC_LAYERS}"
+    echo "[$COMBO_NUM/$TOTAL_COMBINATIONS] ${EXP} - conv${CONV_DIM}x${CONV_LAYERS}_fc${FC_DIM}x${FC_LAYERS}"
     echo "=========================================="
 
     # Build command
-    CMD="python -u TSMC_GCN_voltage_validation.py"
-    CMD="$CMD --corner $CORNER --temperature $TEMP"
+    CMD="python -u TSMC_GCN_topology_validation.py"
+    CMD="$CMD --experiment $EXP"
     CMD="$CMD --model_type $MODEL_TYPE"
     CMD="$CMD --data_type $DATA_TYPE"
     CMD="$CMD --graph_mode $GRAPH_MODE"
+    CMD="$CMD --voltage_mode $VOLTAGE_MODE"
+    CMD="$CMD --normalization $NORMALIZATION"
+    CMD="$CMD --temp_mode $TEMP_MODE"
     CMD="$CMD --mode $MODE"
     CMD="$CMD --total_points $TOTAL_POINTS"
     CMD="$CMD --num_test_samples $NUM_TEST_SAMPLES"
@@ -177,7 +235,31 @@ for corner, temp, conv_dim, conv_layers, fc_dim, fc_layers in combos:
     CMD="$CMD --num_conv_layers $CONV_LAYERS"
     CMD="$CMD --fc_hidden_dim $FC_DIM"
     CMD="$CMD --num_fc_layers $FC_LAYERS"
+    CMD="$CMD --pooling $POOLING"
+    CMD="$CMD --adaptation_method $ADAPTATION_METHOD"
+    CMD="$CMD --output_prefix $OUTPUT_PREFIX"
+    CMD="$CMD --output_dir $OUTPUT_DIR"
     CMD="$CMD --gpu $GPU"
+
+    # Add cache_path if specified
+    if [ -n "$CACHE_PATH" ]; then
+        CMD="$CMD --cache_path $CACHE_PATH"
+    fi
+
+    # Add inputport flag if set
+    if [ -n "$INPUTPORT" ]; then
+        CMD="$CMD $INPUTPORT"
+    fi
+
+    # Add related_pin_only flag if set
+    if [ -n "$RELATED_PIN_ONLY" ]; then
+        CMD="$CMD $RELATED_PIN_ONLY"
+    fi
+
+    # Add dataset_dir if specified
+    if [ -n "$DATASET_DIR" ]; then
+        CMD="$CMD --dataset_dir $DATASET_DIR"
+    fi
 
     # Add MAML-specific params if needed
     if [ "$MODEL_TYPE" = "maml" ]; then
@@ -200,8 +282,22 @@ for corner, temp, conv_dim, conv_layers, fc_dim, fc_layers in combos:
     echo "Command: $CMD"
     echo ""
 
-    # Execute
-    eval $CMD
+    # Execute with real-time output using tee
+    COMBO_START=$(date +%s)
+    TEMP_OUTPUT=$(mktemp)
+    eval $CMD 2>&1 | tee "$TEMP_OUTPUT"
+    EXIT_CODE=${PIPESTATUS[0]}
+    COMBO_END=$(date +%s)
+    COMBO_DURATION=$((COMBO_END - COMBO_START))
+
+    echo ""
+    echo "Duration: ${COMBO_DURATION}s"
+
+    rm -f "$TEMP_OUTPUT"
+
+    if [ $EXIT_CODE -ne 0 ]; then
+        echo "WARNING: Combination failed with exit code $EXIT_CODE"
+    fi
 
 done
 
@@ -210,7 +306,7 @@ DURATION=$((END_TIME - START_TIME))
 
 echo ""
 echo "=========================================="
-echo "Validation Sweep Complete"
+echo "Topology Validation Sweep Complete"
 echo "=========================================="
 echo "Total time: ${DURATION}s ($((DURATION / 60))m)"
 echo ""
