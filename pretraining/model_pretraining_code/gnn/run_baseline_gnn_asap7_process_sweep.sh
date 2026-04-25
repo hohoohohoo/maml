@@ -1,6 +1,7 @@
 #!/bin/bash
-# Baseline GNN Training Sweep for TSMC Dataset (mmap Loading)
-# Uses pre-processed TSMC dataset - no preprocessing needed
+# Baseline GNN Training Sweep for ASAP7 Process Dataset (Unified 3D Format)
+# Uses pre-processed ASAP7 unified dataset with 11D node features
+# Standard mini-batch training (NOT MAML)
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
@@ -10,11 +11,10 @@ if [ $# -lt 1 ]; then
     echo "Usage: $0 <config.json> [--dry-run] [--no-commit]"
     echo ""
     echo "Example:"
-    echo "  $0 json_configs/baseline_gnn_tsmc_sweep_config.json"
-    echo "  $0 json_configs/baseline_gnn_tsmc_sweep_config.json --dry-run"
+    echo "  $0 json_configs/gnn_baseline_asap7_process_sweep_config.json"
+    echo "  $0 json_configs/gnn_baseline_asap7_process_sweep_config.json --dry-run"
     echo ""
-    echo "Note: Requires TSMC dataset to be pre-generated."
-    echo "      Run split_gnn_dataset_tsmc.py --corner <C> --temperature <T> first."
+    echo "Note: Requires ASAP7 unified dataset to be pre-generated."
     exit 1
 fi
 
@@ -48,10 +48,9 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 echo "=========================================="
-echo "Baseline GNN Training - TSMC Dataset"
+echo "Baseline GNN Training - ASAP7 Process (Unified)"
 echo "=========================================="
 echo "Config file: $CONFIG_FILE"
-echo "Mode: mmap loading (memory efficient)"
 echo ""
 
 # Git commit for experiment tracking
@@ -63,12 +62,13 @@ if [ "$NO_COMMIT" = false ] && [ "$DRY_RUN" = false ]; then
             echo "No changes to commit (config file unchanged)"
         else
             TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-            COMMIT_MSG="Start Baseline GNN TSMC sweep: $(basename $CONFIG_FILE)
+            COMMIT_MSG="Start Baseline GNN ASAP7 Process sweep: $(basename $CONFIG_FILE)
 
 Experiment Configuration:
 - Config file: $CONFIG_FILE
 - Timestamp: $TIMESTAMP
-- Mode: TSMC dataset (mmap loading)
+- Dataset: ASAP7 Process (11D node features: 7 base + 4 process params)
+- Training type: Standard mini-batch (NOT MAML)
 
 Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 "
@@ -93,49 +93,49 @@ fi
 # Parse JSON config
 EXPERIMENT_NAME=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['experiment_name'])")
 
-# Parse base_config - handle integer and string values properly
-CORNER=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['corner'])")
-TEMPERATURE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['temperature'])")
-DATA_TYPE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['data_type'])")
-GRAPH_MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['graph_mode'])")
-TOTAL_ITERATIONS=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['total_iterations'])")
-CHUNK_SIZE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['chunk_size'])")
-LR=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['lr'])")
-WD=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['wd'])")
-BATCH_SIZE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('batch_size', 5))")
-GPU=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config']['gpu'])")
+# Parse base_config with special handling for boolean flags
+BASE_CONFIG=$(python3 -c "
+import json
+c = json.load(open('$CONFIG_FILE'))['base_config']
+args = []
+for k, v in c.items():
+    if isinstance(v, bool):
+        if v:
+            args.append(f'--{k}')
+    else:
+        args.append(f'--{k} {v}')
+print(' '.join(args))
+")
 
-# Parse sweep_params
 SWEEP_PARAMS=$(python3 -c "import json; s=json.load(open('$CONFIG_FILE'))['sweep_params']; print(' '.join([f'--{k} {\" \".join(map(str, v))}' for k,v in s.items()]))")
+
+# Parse loss logging config (optional)
+LOSS_LOGGING_CONFIG=$(python3 -c "
+import json
+config = json.load(open('$CONFIG_FILE'))
+loss_logging = config.get('loss_logging', {})
+args = []
+if loss_logging.get('enabled', False):
+    args.append('--enable_loss_logging')
+    if loss_logging.get('log_every'):
+        args.append(f'--loss_log_every {loss_logging[\"log_every\"]}')
+    if loss_logging.get('save_dir'):
+        args.append(f'--loss_log_dir {loss_logging[\"save_dir\"]}')
+print(' '.join(args))
+")
 
 # Calculate total combinations
 TOTAL_COMBINATIONS=$(python3 -c "import json, itertools; s=json.load(open('$CONFIG_FILE'))['sweep_params']; print(len(list(itertools.product(*s.values()))))")
 
 echo "Experiment: $EXPERIMENT_NAME"
-echo ""
-echo "Base config:"
-echo "  Corner: $CORNER"
-echo "  Temperature: $TEMPERATURE"
-echo "  Data type: $DATA_TYPE"
-echo "  Graph mode: $GRAPH_MODE"
-echo "  Total iterations: $TOTAL_ITERATIONS"
-echo "  Chunk size: $CHUNK_SIZE"
-echo "  Learning rate: $LR"
-echo "  Weight decay: $WD"
-echo "  Batch size: $BATCH_SIZE"
-echo "  GPU: $GPU"
-echo ""
 echo "Total combinations: $TOTAL_COMBINATIONS"
+if [ -n "$LOSS_LOGGING_CONFIG" ]; then
+    echo "Loss logging: $LOSS_LOGGING_CONFIG"
+fi
 echo ""
 
-# Build command for TSMC baseline training
-FULL_CMD="python -u baseline_gnn_training_tsmc.py"
-FULL_CMD="$FULL_CMD --corner $CORNER --temperature $TEMPERATURE"
-FULL_CMD="$FULL_CMD --data_type $DATA_TYPE --graph_mode $GRAPH_MODE"
-FULL_CMD="$FULL_CMD --total_iterations $TOTAL_ITERATIONS --chunk_size $CHUNK_SIZE"
-FULL_CMD="$FULL_CMD --lr $LR --wd $WD --batch_size $BATCH_SIZE"
-FULL_CMD="$FULL_CMD --gpu $GPU"
-FULL_CMD="$FULL_CMD $SWEEP_PARAMS"
+# Build command - use ASAP7 Process Baseline version
+FULL_CMD="python -u baseline_gnn_training_asap7_process.py $BASE_CONFIG $SWEEP_PARAMS $LOSS_LOGGING_CONFIG"
 
 if [ "$DRY_RUN" = true ]; then
     echo "DRY RUN MODE"
@@ -144,16 +144,40 @@ if [ "$DRY_RUN" = true ]; then
     echo "$FULL_CMD"
     echo ""
     echo "This will:"
-    echo "  1. Load TSMC dataset with mmap (memory efficient)"
+    echo "  1. Load ASAP7 Process unified dataset (11D node features)"
     echo "  2. Train $TOTAL_COMBINATIONS architectures sequentially"
-    echo "  3. Save all models"
+    echo "  3. Save all models to pretrained_models/gnn_baseline_asap7_process_final{suffix}/"
+    echo "     (suffix: _vdd_only if voltage_mode=vdd_only, _relpin if related_pin_only=true, _sampling always)"
+    echo ""
+    echo "Training type: Standard mini-batch (NOT MAML)"
+    echo "  - Each iteration: randomly select one task"
+    echo "  - Sample batch_size samples from that task"
+    echo "  - Direct forward pass with Adam optimizer"
+    echo "  - Weight decay (L2 regularization)"
+    echo ""
+    echo "Voltage mode options (voltage_mode):"
+    echo "  - all_nodes: Voltage feature on all nodes (default)"
+    echo "  - vdd_only: Voltage only on VDD nodes, 0 elsewhere"
+    echo ""
+    echo "Related pin only option (related_pin_only):"
+    echo "  - false: Use all slew assignments (default)"
+    echo "  - true: Use related_pin_only slew assignment (adds _relpin suffix)"
+    echo ""
+    echo "Sampling option (sampling):"
+    echo "  - full: Use full dataset (adds _full suffix, default)"
+    echo "  - Xpct: Use X% of dataset (e.g., 10pct, 50pct - adds _Xpct suffix)"
+    echo ""
+    echo "Loss logging options (in loss_logging):"
+    echo "  - enabled: true/false - Enable/disable loss logging"
+    echo "  - log_every: N - Log loss every N iterations (default: 1000)"
+    echo "  - save_dir: path - Directory to save loss logs (default: loss_logs/)"
     echo ""
     echo "Dry run complete. Use without --dry-run to execute."
     exit 0
 fi
 
 # Execute
-echo "Starting TSMC baseline sweep..."
+echo "Starting ASAP7 Process Baseline sweep..."
 echo ""
 echo "Command:"
 echo "$FULL_CMD"

@@ -1,44 +1,42 @@
 #!/usr/bin/env python
 """
-Baseline GNN Training for TSMC Dataset - mmap Loading
+Baseline GNN Training for ASAP7 Process Dataset - Unified 3D Format
 
-Uses pre-split and pre-processed TSMC datasets from split_gnn_dataset_tsmc.py
-No preprocessing needed - data is already filtered and norm_stats are pre-computed.
-Memory-mapped loading (mmap=True) to avoid loading entire file into RAM.
-
-TSMC Dataset Structure:
-- 3 corners: TT, FF, SS
-- 5 temperatures: 0, 25, 50, 75, 100
-- 15 total configurations: TSMC_{corner}_{temperature}
-  (e.g., TSMC_TT_0, TSMC_FF_25, TSMC_SS_100)
-- Each folder is a separate dataset (not merged)
-- Train/test files in: {folder}/train_test_split/
+Uses unified datasets with 11D node features (7 base + 4 process params).
+Memory-mapped loading (mmap) for large datasets via torch.load(..., mmap=True).
 
 Key Features:
-- Loads unified train file with mmap (train_cell_stage_aware.pth)
-- Topology reconstruction from cache on-the-fly
+- Node features: 11D (7 base + 4 process params: param_a, param_b, param_c, temperature)
+- Memory-mapped .pth tensors for efficient loading
 - Standard mini-batch training (NOT MAML)
 - Per-task output normalization (on-the-fly)
 - Adam optimizer with weight decay
+
+Dataset Structure (unified 3D format):
+- train_{data_type}_{graph_mode}.pth
+  - node_features: [num_libs, total_nodes, 11] torch.Tensor
+  - outputs: [num_libs, num_tasks] torch.Tensor
+  - node_slices: [num_tasks + 1] torch.Tensor
+  - cell_names, delay_types, output_names, norm_stats, etc.
+  - format: 'unified_3d' or 'tensor'
 """
 
 import os
 import sys
+import json
 
 # Parse GPU argument before importing torch
-# This is necessary because CUDA_VISIBLE_DEVICES must be set before torch import
 def get_gpu_from_args():
     for i, arg in enumerate(sys.argv):
         if arg == '--gpu' and i + 1 < len(sys.argv):
             return sys.argv[i + 1]
-    return '0'  # default
+    return '0'
 
 os.environ["CUDA_VISIBLE_DEVICES"] = get_gpu_from_args()
 
 import torch
 from torch import optim
 import torch.nn as nn
-import sys
 import random
 from torch_geometric.data import Data, Batch
 from torch.utils.data import Dataset
@@ -62,110 +60,117 @@ else:
 
 # Add paths
 sys.path.append('./')
-sys.path.append('tools/data_processing')
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..', 'model_code'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'utils'))
 
-from gnn_maml import (
-    MAML_GNN_Model,
-    create_maml_gcn_model
-)
-from gnn_data_preprocessing_utils import (
-    normalize_node_features_safe,
-    normalize_task_outputs
-)
+from gnn_maml import create_maml_gcn_model
+from gnn_data_preprocessing_utils import normalize_node_features_safe
 
 
-class TSMCBaselineDataset(Dataset):
+class ASAP7ProcessDataset(Dataset):
     """
-    PyTorch Dataset for TSMC Baseline GNN training with true mmap loading.
-    Uses tensor-based storage format for efficient memory-mapped access.
+    PyTorch Dataset for ASAP7 Process GNN training.
+    Supports unified 3D tensor format (.pth).
 
-    Data format:
-    - node_features: [num_libs, total_nodes, num_features] - mmap tensor
-    - outputs: [num_libs, num_tasks] - mmap tensor
-    - node_slices: [num_tasks + 1] - cumulative node indices
-    - cell_names: [num_tasks] - for topology cache lookup
-
-    edge_index is loaded from topology_cache using cell_name.
+    Unified format (train_cell_stage_aware.pth):
+    - node_features: [num_libs, total_nodes, 11] - 3D tensor
+    - outputs: [num_libs, num_tasks] - 2D tensor
+    - node_slices: [num_tasks + 1] - cumulative indices
     """
 
     def __init__(self, train_path, graph_mode='stage_aware'):
         """
         Args:
-            train_path: Path to train file (train_cell_stage_aware.pth)
+            train_path: Path to train file (.pth for unified format)
             graph_mode: 'full_graph' or 'stage_aware'
         """
         self.train_path = train_path
         self.graph_mode = graph_mode
 
-        # Data references (mmap)
+        # Data references
         self._data = None
         self._node_features = None
         self._outputs = None
-        self._node_slices = None
+        self._slices = None
+
+        # Metadata
         self._cell_names = None
         self._delay_types = None
         self._output_names = None
-
-        # Metadata
         self._topology_cache = None
         self._norm_stats = None
         self._num_tasks = None
         self._num_libs = None
 
-        # Load data with mmap (large, memory-mapped)
+        # Load data
         self._load_data()
 
-        print(f"TSMCBaselineDataset initialized (tensor format, mmap):")
-        print(f"   Train file: {train_path}")
+        print(f"ASAP7ProcessDataset initialized (11D features):")
+        print(f"   Train path: {train_path}")
+        print(f"   Graph mode: {graph_mode}")
         print(f"   Tasks: {self._num_tasks}")
         print(f"   Libs: {self._num_libs}")
-        print(f"   Graph mode: {graph_mode}")
-        print(f"   node_features: {self._node_features.shape}")
-        print(f"   outputs: {self._outputs.shape}")
-        print(f"   topology_cache: {len(self._topology_cache)} cells")
+        print(f"   Node features shape: {self._node_features.shape}")
+        print(f"   Topology cache: {len(self._topology_cache)} cells")
 
     def _load_data(self):
-        """Load data using memory mapping (mmap) and topology cache"""
-        print(f"   Loading with mmap=True (memory-mapped tensors)")
+        """Load unified 3D tensor format (.pth file)"""
+        print(f"   Loading unified format (mmap): {self.train_path}")
+
         data = torch.load(self.train_path, weights_only=False, map_location='cpu', mmap=True)
 
-        # Check format
-        if data.get('format') != 'tensor':
-            raise ValueError(f"Expected tensor format, got: {data.get('format', 'legacy')}")
+        # Check format (accept both 'tensor' and 'unified_3d')
+        data_format = data.get('format', 'legacy')
+        if data_format not in ['tensor', 'unified_3d']:
+            raise ValueError(f"Expected tensor or unified_3d format, got: {data_format}")
 
-        # Store mmap tensor references
         self._node_features = data['node_features']
         self._outputs = data['outputs']
-        self._node_slices = data['node_slices']
-        self._cell_names = data['cell_names']
-        self._delay_types = data.get('delay_types', None)
-        self._output_names = data.get('output_names', None)
-
-        # Metadata
+        self._slices = data['node_slices']
+        self._cell_names = data.get('cell_names', [])
+        self._delay_types = data.get('delay_types', [])
+        self._output_names = data.get('output_names', [])
         self._num_libs = data['num_libs']
         self._num_tasks = data['num_tasks']
         self._norm_stats = data.get('norm_stats', None)
 
-        # Load topology cache from cache_path in data file
+        # Load topology cache
         cache_path = data.get('cache_path', None)
         if cache_path:
             self._load_topology_cache(cache_path)
 
-        # Keep reference to prevent garbage collection
         self._data = data
 
     def _load_topology_cache(self, cache_path):
-        """Load topology cache (small file, load entirely into memory)"""
-        # Handle path variations (/mnt/home vs /home)
+        """Load topology cache"""
+        # Handle path variations
         if cache_path.startswith('/mnt/home/'):
             cache_path = cache_path.replace('/mnt/home/', '/home/')
 
-        # Resolve relative path if needed
         if not os.path.isabs(cache_path) or not os.path.exists(cache_path):
             cache_filename = os.path.basename(cache_path)
             cache_path = f"/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/{cache_filename}"
+
+        # If cache file still not found, try to find matching file based on graph_mode
+        if not os.path.exists(cache_path):
+            cache_dir = "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache"
+            cache_filename = os.path.basename(cache_path)
+
+            # Try to find cache file matching current graph_mode
+            if self.graph_mode == 'full_graph':
+                if 'stage_aware_' in cache_filename:
+                    alt_filename = cache_filename.replace('stage_aware_', 'full_graph_')
+                    alt_path = os.path.join(cache_dir, alt_filename)
+                    if os.path.exists(alt_path):
+                        cache_path = alt_path
+                        print(f"   Using full_graph cache: {alt_filename}")
+            elif self.graph_mode == 'stage_aware':
+                if 'full_graph_' in cache_filename:
+                    alt_filename = cache_filename.replace('full_graph_', 'stage_aware_')
+                    alt_path = os.path.join(cache_dir, alt_filename)
+                    if os.path.exists(alt_path):
+                        cache_path = alt_path
+                        print(f"   Using stage_aware cache: {alt_filename}")
 
         if not os.path.exists(cache_path):
             raise FileNotFoundError(f"Topology cache not found: {cache_path}")
@@ -176,7 +181,6 @@ class TSMCBaselineDataset(Dataset):
 
     @property
     def topology_cache(self):
-        """Get topology cache"""
         return self._topology_cache
 
     @property
@@ -197,20 +201,18 @@ class TSMCBaselineDataset(Dataset):
     def __getitem__(self, task_idx):
         """Get data for a specific task"""
         if task_idx >= self._num_tasks:
-            raise IndexError(f"Task index {task_idx} out of range (max: {self._num_tasks - 1})")
+            raise IndexError(f"Task index {task_idx} out of range")
 
-        # Get cell name and metadata from stored data
         cell_name = self._cell_names[task_idx] if self._cell_names else f'task_{task_idx}'
         delay_type = self._delay_types[task_idx] if self._delay_types else 'rise'
         output_name = self._output_names[task_idx] if self._output_names else ''
 
-        # Get edge_index from topology cache based on graph_mode
+        # Get edge_index from topology cache
         edge_index = None
-        if self.topology_cache and cell_name in self.topology_cache:
-            cell_cache = self.topology_cache[cell_name]
+        if self._topology_cache and cell_name in self._topology_cache:
+            cell_cache = self._topology_cache[cell_name]
 
             if self.graph_mode == 'stage_aware' and 'output_topologies' in cell_cache:
-                # Stage-aware: use delay_type and output_name to get correct adjacency matrix
                 if output_name in cell_cache['output_topologies']:
                     output_topo = cell_cache['output_topologies'][output_name]
                     if 'rise' in delay_type:
@@ -219,44 +221,62 @@ class TSMCBaselineDataset(Dataset):
                         adjacency_matrix = output_topo['pull_down']['adjacency_matrix']
                     edge_index = adjacency_matrix.nonzero().t()
                 else:
-                    # Fallback to full graph if output_name not found
                     if 'edge_index' in cell_cache:
                         edge_index = cell_cache['edge_index']
                     elif 'adjacency_matrix' in cell_cache:
                         edge_index = cell_cache['adjacency_matrix'].nonzero().t()
             else:
-                # Full graph mode
                 if 'edge_index' in cell_cache:
                     edge_index = cell_cache['edge_index']
                 elif 'adjacency_matrix' in cell_cache:
                     edge_index = cell_cache['adjacency_matrix'].nonzero().t()
 
-        # Get slice indices for node_features
-        node_start = self._node_slices[task_idx].item()
-        node_end = self._node_slices[task_idx + 1].item()
+        # Get slice indices
+        if isinstance(self._slices, torch.Tensor):
+            node_start = self._slices[task_idx].item()
+            node_end = self._slices[task_idx + 1].item() if task_idx + 1 < len(self._slices) else self._node_features.shape[1]
+        else:
+            node_start = int(self._slices[task_idx])
+            node_end = int(self._slices[task_idx + 1])
 
         # Get outputs for all libs
         task_outputs = self._outputs[:, task_idx]
 
-        # Build minimal_samples list for compatibility
+        # Build minimal_samples list
         minimal_samples = []
         for lib_idx in range(self._num_libs):
-            # Extract node features for this lib and task
-            task_node_features = self._node_features[lib_idx, node_start:node_end, :]
+            if isinstance(self._node_features, torch.Tensor):
+                task_node_features = self._node_features[lib_idx, node_start:node_end, :].clone()
+            else:
+                task_node_features = torch.from_numpy(
+                    self._node_features[lib_idx, node_start:node_end, :].copy()
+                ).float()
+
+            # Get output value
+            if isinstance(task_outputs, torch.Tensor):
+                output_val = task_outputs[lib_idx].item()
+            else:
+                output_val = float(task_outputs[lib_idx])
 
             sample = {
                 'node_features': task_node_features,
                 'edge_index': edge_index,
-                'output': task_outputs[lib_idx].item(),
+                'output': output_val,
                 'cell_name': cell_name,
                 'delay_type': delay_type,
                 'output_name': output_name,
             }
             minimal_samples.append(sample)
 
+        # Handle output list conversion
+        if isinstance(task_outputs, torch.Tensor):
+            outputs_list = task_outputs.tolist()
+        else:
+            outputs_list = task_outputs.tolist()
+
         return {
             'minimal_samples': minimal_samples,
-            'outputs': task_outputs.tolist(),
+            'outputs': outputs_list,
             'task_idx': task_idx,
             'cell_name': cell_name,
             'delay_type': delay_type,
@@ -264,28 +284,15 @@ class TSMCBaselineDataset(Dataset):
         }
 
 
-class GNN_Baseline_TSMC:
+class GNN_Baseline_ASAP7Process:
     """
-    GNN Baseline training with TSMC dataset (mmap loading).
+    GNN Baseline training with ASAP7 Process dataset (11D features).
     Standard mini-batch training (NOT MAML).
-
-    Data organization:
-    - Dataset organized into tasks (same input condition across lib files)
-    - Each task has num_libs samples (different lib files)
-    - Each iteration: randomly select 1 task, then randomly sample batch_size samples
     """
 
     def __init__(self, model, lr=2e-3, wd=5e-3,
-                 dataset=None, iteration=100000, batch_size=5):
-        """
-        Args:
-            model: GNN model
-            lr: Learning rate
-            wd: Weight decay
-            dataset: TSMCBaselineDataset instance
-            iteration: Number of training iterations
-            batch_size: Number of samples per task in mini-batch
-        """
+                 dataset=None, iteration=100000, batch_size=5,
+                 loss_logging_config=None):
         self.lr = lr
         self.wd = wd
         self.iteration = iteration
@@ -300,7 +307,7 @@ class GNN_Baseline_TSMC:
         self.num_tasks = dataset.num_tasks if dataset else 0
         self.lib_files_per_task = dataset.num_libs if dataset else 0
 
-        # Task output normalization (computed on-the-fly)
+        # Task output normalization cache
         self.task_norm_stats = {}
 
         # Model and optimizer
@@ -311,7 +318,14 @@ class GNN_Baseline_TSMC:
 
         self.optimizer = optim.Adam(self.model.parameters(), lr=self.lr, weight_decay=self.wd)
 
-        print(f"\nGNN Baseline TSMC Configuration:")
+        # Loss logging configuration
+        self.loss_logging_config = loss_logging_config or {}
+        self.enable_loss_logging = self.loss_logging_config.get('enabled', False)
+        self.loss_log_every = self.loss_logging_config.get('log_every', 1000)
+        self.loss_log_dir = self.loss_logging_config.get('save_dir', None)
+        self.iteration_loss_log = []  # List of (iteration, loss) tuples
+
+        print(f"\nGNN Baseline ASAP7 Process Configuration:")
         print(f"  Cache type: {self.cache_type}")
         print(f"  Number of tasks: {self.num_tasks}")
         print(f"  Lib files per task: {self.lib_files_per_task}")
@@ -319,7 +333,9 @@ class GNN_Baseline_TSMC:
         print(f"  Learning rate: {self.lr}")
         print(f"  Weight decay: {self.wd}")
         print(f"  Iterations: {self.iteration}")
-        print(f"  Memory efficient: mmap loading enabled")
+        print(f"  Node features: 11D (with process params)")
+        if self.enable_loss_logging:
+            print(f"  Loss logging: enabled (every {self.loss_log_every} iterations)")
 
     def normalize_node_features(self, node_features):
         """Normalize node features using saved statistics"""
@@ -328,12 +344,12 @@ class GNN_Baseline_TSMC:
 
         normalized, _ = normalize_node_features_safe(
             node_features,
-            norm_stats=self.norm_stats['node_features']
+            norm_stats=self.norm_stats.get('node_features', self.norm_stats)
         )
         return normalized
 
     def normalize_outputs(self, outputs, task_idx):
-        """Normalize outputs for a task (with caching)"""
+        """Normalize outputs for a task"""
         if task_idx not in self.task_norm_stats:
             outputs_tensor = torch.tensor(outputs, dtype=torch.float32)
             mean = outputs_tensor.mean().item()
@@ -346,7 +362,7 @@ class GNN_Baseline_TSMC:
         return [(o - stats['mean']) / stats['std'] for o in outputs]
 
     def get_adjacency_matrix_from_cache(self, minimal_sample):
-        """Load pre-computed adjacency matrix from topology cache"""
+        """Load adjacency matrix from topology cache"""
         cell_name = minimal_sample['cell_name']
 
         if cell_name not in self.topology_cache:
@@ -373,7 +389,7 @@ class GNN_Baseline_TSMC:
         return adjacency_matrix
 
     def create_pyg_data_with_adj_matrix(self, minimal_sample):
-        """Create PyTorch Geometric Data object from minimal sample"""
+        """Create PyTorch Geometric Data object"""
         node_features = minimal_sample['node_features']
         adjacency_matrix = self.get_adjacency_matrix_from_cache(minimal_sample)
         normalized_features = self.normalize_node_features(node_features)
@@ -391,45 +407,35 @@ class GNN_Baseline_TSMC:
         minimal_samples = task_data['minimal_samples']
         raw_outputs = task_data['outputs']
 
-        # Normalize outputs on-the-fly
         outputs = self.normalize_outputs(raw_outputs, task_idx)
-
         return minimal_samples, outputs
 
-    def loop(self, checkpoint_dir='checkpoints'):
-        """
-        Training loop with task-based mini-batch sampling
+    def loop(self, checkpoint_dir='checkpoints', start_iteration=0):
+        """Training loop
 
-        Each iteration:
-        1. Select a random task
-        2. Within that task, randomly sample batch_size samples
-        3. Train using standard SGD
-
-        Returns:
-            Average training loss
+        Args:
+            checkpoint_dir: Directory for checkpoints
+            start_iteration: Starting iteration number (for cumulative tracking when resuming)
         """
         running_loss = 0.0
         os.makedirs(checkpoint_dir, exist_ok=True)
 
         for i in range(self.iteration):
+            cumulative_iteration = start_iteration + i + 1
+
             if i % 1000 == 0:
                 avg_loss = running_loss / max(1, i)
                 print(f"Iteration {i}/{self.iteration}, Avg Loss: {avg_loss:.6f}")
 
-            # Select random task
             task_idx = random.randint(0, self.num_tasks - 1)
-
-            # Get task data
             minimal_samples, outputs = self.get_task_data(task_idx)
 
-            # Sample random indices
             total_samples = len(minimal_samples)
             if total_samples < self.batch_size:
                 sample_indices = list(range(total_samples))
             else:
                 sample_indices = random.sample(range(total_samples), self.batch_size)
 
-            # Create mini-batch
             batch_data = []
             batch_outputs = []
 
@@ -440,11 +446,9 @@ class GNN_Baseline_TSMC:
                 batch_data.append(data)
                 batch_outputs.append(output)
 
-            # Create PyG batch
             X = Batch.from_data_list(batch_data).to(device)
             y = torch.tensor(batch_outputs, dtype=torch.float32).to(device).view(-1, 1)
 
-            # Training step
             self.optimizer.zero_grad()
             self.model.train()
             y_pred = self.model(X)
@@ -455,72 +459,73 @@ class GNN_Baseline_TSMC:
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
             self.optimizer.step()
 
-            running_loss += the_loss.item()
+            current_loss = the_loss.item()
+            running_loss += current_loss
+
+            # Loss logging at specified intervals
+            if self.enable_loss_logging and cumulative_iteration % self.loss_log_every == 0:
+                self.iteration_loss_log.append({
+                    'iteration': cumulative_iteration,
+                    'loss': current_loss
+                })
 
         return float(running_loss / self.iteration)
 
+    def save_loss_log(self, save_path):
+        """Save iteration loss log to JSON file
 
-# TSMC corners and temperatures
-TSMC_CORNERS = ['TT', 'FF', 'SS']
-TSMC_TEMPERATURES = [0, 25, 50, 75, 100]
+        Args:
+            save_path: Path to save the loss log JSON file
+        """
+        if not self.iteration_loss_log:
+            print("No loss log entries to save")
+            return
 
-# Generate all 15 folder combinations
-TSMC_FOLDERS = [f"TSMC_{corner}_{temp}" for corner in TSMC_CORNERS for temp in TSMC_TEMPERATURES]
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+
+        log_data = {
+            'config': {
+                'lr': self.lr,
+                'wd': self.wd,
+                'batch_size': self.batch_size,
+                'loss_log_every': self.loss_log_every
+            },
+            'loss_log': self.iteration_loss_log
+        }
+
+        with open(save_path, 'w') as f:
+            json.dump(log_data, f, indent=2)
+
+        print(f"Loss log saved: {save_path} ({len(self.iteration_loss_log)} entries)")
 
 
-def get_folder_name(corner, temperature):
-    """Generate folder name from corner and temperature"""
-    return f"TSMC_{corner}_{temperature}"
-
-
-def get_tsmc_train_path(folder_name, data_type='cell', graph_mode='stage_aware'):
-    """Get path to TSMC train file"""
-    base_path = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC_GNN"
-    train_file = os.path.join(base_path, folder_name, "train_test_split", f"train_{data_type}_{graph_mode}.pth")
-
-    if not os.path.exists(train_file):
-        raise FileNotFoundError(f"TSMC train file not found: {train_file}\n"
-                               f"Run split_gnn_dataset_tsmc.py --folder {folder_name} first.")
-
-    return train_file
+# Default dataset path
+DEFAULT_DATASET_DIR = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/GNN_dataset_ASAP7"
 
 
 def parse_arguments():
     """Parse command-line arguments"""
     parser = argparse.ArgumentParser(
-        description='Baseline GNN Training for TSMC Dataset (mmap Loading)',
+        description='Baseline GNN Training for ASAP7 Process Dataset (11D features)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Single configuration using folder name
-  python baseline_gnn_training_tsmc.py --folder TSMC_FF_25 --graph_mode stage_aware
-
-  # Using corner and temperature shorthand
-  python baseline_gnn_training_tsmc.py --corner FF --temperature 25
+  # Single training run
+  python baseline_gnn_training_asap7_process.py --graph_mode stage_aware
 
   # Architecture sweep
-  python baseline_gnn_training_tsmc.py --corner TT --temperature 0 \\
-      --conv_hidden_dim 64 128 256 \\
-      --num_conv_layers 2 3 4
+  python baseline_gnn_training_asap7_process.py \\
+      --conv_hidden_dim 32 64 128 \\
+      --num_conv_layers 2 3
 
-  # Run all 15 configurations (3 corners x 5 temperatures)
-  python baseline_gnn_training_tsmc.py --run_all --graph_mode stage_aware
+  # Full graph mode
+  python baseline_gnn_training_asap7_process.py --graph_mode full_graph
 """
     )
 
-    # Run all option
-    parser.add_argument('--run_all', action='store_true',
-                       help='Run all 15 configurations (3 corners x 5 temperatures)')
-
-    # Single run arguments
-    parser.add_argument('--folder', type=str,
-                       help='TSMC folder name (e.g., TSMC_FF_0)')
-    parser.add_argument('--corner', type=str,
-                       choices=['TT', 'FF', 'SS'],
-                       help='Process corner (shorthand, use with --temperature)')
-    parser.add_argument('--temperature', type=int,
-                       choices=[0, 25, 50, 75, 100],
-                       help='Temperature in Celsius (shorthand, use with --corner)')
+    # Dataset path
+    parser.add_argument('--dataset_dir', type=str, default=DEFAULT_DATASET_DIR,
+                       help=f'Dataset directory (default: {DEFAULT_DATASET_DIR})')
 
     # Training hyperparameters
     parser.add_argument('--lr', type=float, default=1e-4,
@@ -530,13 +535,13 @@ Examples:
     parser.add_argument('--batch_size', type=int, default=5,
                        help='Mini-batch size (default: 5)')
 
-    # Model architecture parameters
-    parser.add_argument('--conv_hidden_dim', type=int, nargs='+', default=[128],
-                       help='Convolution layer hidden dimension(s) (default: 128)')
-    parser.add_argument('--num_conv_layers', type=int, nargs='+', default=[3],
-                       help='Number of GCN convolutional layers (default: 3)')
-    parser.add_argument('--fc_hidden_dim', type=int, nargs='+', default=[40],
-                       help='FC layer hidden dimension(s) (default: 40)')
+    # Model architecture
+    parser.add_argument('--conv_hidden_dim', type=int, nargs='+', default=[32],
+                       help='Conv hidden dim(s) (default: 32)')
+    parser.add_argument('--num_conv_layers', type=int, nargs='+', default=[2],
+                       help='Number of conv layers (default: 2)')
+    parser.add_argument('--fc_hidden_dim', type=int, nargs='+', default=[64],
+                       help='FC hidden dim(s) (default: 64)')
     parser.add_argument('--num_fc_layers', type=int, nargs='+', default=[2],
                        help='Number of FC layers (default: 2)')
 
@@ -546,25 +551,49 @@ Examples:
     parser.add_argument('--chunk_size', type=int, default=10000,
                        help='Chunk size (default: 10000)')
 
-    # GPU configuration
-    parser.add_argument('--gpu', type=str, default='2',
-                       help='GPU device ID (default: 2)')
+    # GPU
+    parser.add_argument('--gpu', type=str, default='0',
+                       help='GPU device ID (default: 0)')
 
-    # Data type
+    # Data type and graph mode
     parser.add_argument('--data_type', type=str, default='cell',
                        choices=['cell', 'transition'],
                        help='Data type (default: cell)')
-
-    # Graph mode
     parser.add_argument('--graph_mode', type=str, default='stage_aware',
                        choices=['stage_aware', 'full_graph'],
                        help='Graph mode (default: stage_aware)')
 
+    # Pooling method
+    parser.add_argument('--pooling', type=str, default='mean',
+                       choices=['mean', 'output'],
+                       help='Pooling method: mean (global mean pooling) or output (output node only) (default: mean)')
+
+    # Voltage mode
+    parser.add_argument('--voltage_mode', type=str, default='all_nodes',
+                       choices=['all_nodes', 'vdd_only'],
+                       help='Voltage mode: all_nodes (voltage on all nodes) or vdd_only (voltage only on VDD) (default: all_nodes)')
+
+    # Related pin only
+    parser.add_argument('--related_pin_only', action='store_true',
+                       help='Use related_pin_only slew assignment (adds _relpin suffix to paths)')
+
+    # Sampling
+    parser.add_argument('--sampling', type=str, default='full',
+                       help='Sampling percentage: "full" (no suffix) or "Xpct" e.g. "10pct", "50pct" (default: full)')
+
+    # Loss logging options
+    parser.add_argument('--enable_loss_logging', action='store_true',
+                       help='Enable training loss logging at specified intervals')
+    parser.add_argument('--loss_log_every', type=int, default=1000,
+                       help='Log training loss every N iterations (default: 1000)')
+    parser.add_argument('--loss_log_dir', type=str, default=None,
+                       help='Directory to save loss logs (default: loss_logs/)')
+
     return parser.parse_args()
 
 
-def train_single_config(folder_name, args):
-    """Train a single TSMC folder configuration"""
+def train_single_config(args):
+    """Train a single configuration"""
     import itertools
 
     total_iterations = args.total_iterations
@@ -574,8 +603,13 @@ def train_single_config(folder_name, args):
     batch_size = args.batch_size
     data_type = args.data_type
     graph_mode = args.graph_mode
+    dataset_dir = args.dataset_dir
+    pooling = args.pooling
+    voltage_mode = args.voltage_mode
+    related_pin_only = args.related_pin_only
+    sampling = args.sampling
 
-    # Generate architecture combinations
+    # Architecture combinations
     arch_combinations = list(itertools.product(
         args.conv_hidden_dim,
         args.num_conv_layers,
@@ -587,28 +621,50 @@ def train_single_config(folder_name, args):
     is_sweep = num_combinations > 1
 
     print(f"\n{'#'*80}")
-    print(f"# Baseline GNN Training for TSMC Dataset (mmap Loading)")
+    print(f"# Baseline GNN Training - ASAP7 Process (11D features)")
     print(f"{'#'*80}")
-    print(f"Folder: {folder_name}")
+    print(f"Dataset: {dataset_dir}")
     print(f"Data type: {data_type}")
     print(f"Graph mode: {graph_mode}")
+    print(f"Pooling: {pooling}")
+    print(f"Voltage mode: {voltage_mode}")
+    print(f"Related pin only: {related_pin_only}")
+    print(f"Sampling: {sampling}")
     print(f"Learning rate: {lr}")
     print(f"Weight decay: {wd}")
     print(f"Batch size: {batch_size}")
     print(f"Total iterations: {total_iterations}")
+    print(f"Node features: 11D (7 base + 4 process params)")
 
     if is_sweep:
         print(f"\nArchitecture Sweep: {num_combinations} combinations")
 
-    # Get train file path
-    train_path = get_tsmc_train_path(folder_name, data_type, graph_mode)
-    print(f"\nTrain file: {train_path}")
-
-    # Create dataset with mmap loading
+    # Create dataset
     print("\nCreating dataset (mmap loading)...")
     data_load_start = time.time()
 
-    dataset = TSMCBaselineDataset(
+    # Build suffixes for voltage_mode, related_pin_only, and sampling
+    voltage_suffix_data = "_vdd_only" if voltage_mode == "vdd_only" else ""
+    relpin_suffix_data = "_relpin" if related_pin_only else ""
+    sampling_suffix_data = f"_{sampling}"  # Always include sampling suffix (e.g., _full, _10pct)
+    voltage_suffix_ckpt = "_vdd_only" if voltage_mode == "vdd_only" else ""
+    relpin_suffix_ckpt = "_relpin" if related_pin_only else ""
+    sampling_suffix_ckpt = f"_{sampling}"  # Always include sampling suffix
+
+    # Construct train file path
+    train_file = f"train_{data_type}_{graph_mode}{voltage_suffix_data}{relpin_suffix_data}{sampling_suffix_data}.pth"
+    train_path = os.path.join(dataset_dir, train_file)
+
+    if not os.path.exists(train_path):
+        print(f"Error: Train file not found: {train_path}")
+        print(f"Looking in dataset_dir: {dataset_dir}")
+        available_files = [f for f in os.listdir(dataset_dir) if f.endswith('.pth')]
+        print(f"Available .pth files: {available_files}")
+        return None
+
+    print(f"Using train file: {train_path}")
+
+    dataset = ASAP7ProcessDataset(
         train_path=train_path,
         graph_mode=graph_mode
     )
@@ -616,14 +672,16 @@ def train_single_config(folder_name, args):
     data_load_time = time.time() - data_load_start
     print(f"Dataset initialized in {data_load_time:.2f} seconds")
 
-    # Get norm_stats from dataset
     norm_stats = dataset.norm_stats
 
-    # Create checkpoint directory
-    checkpoint_dir = "../../../pretrained_models/gnn_baseline_tsmc_checkpoints"
+    # Checkpoint directories (with voltage_mode, related_pin_only, and sampling suffixes)
+    dir_suffix = f"{voltage_suffix_ckpt}{relpin_suffix_ckpt}{sampling_suffix_ckpt}"
+    checkpoint_dir = f"../../../pretrained_models/gnn_baseline_asap7_process_checkpoints{dir_suffix}"
+    final_model_dir = f"../../../pretrained_models/gnn_baseline_asap7_process_final{dir_suffix}"
     os.makedirs(checkpoint_dir, exist_ok=True)
+    os.makedirs(final_model_dir, exist_ok=True)
 
-    # Train each architecture combination
+    # Train each architecture
     trained_models = []
     sweep_start_time = time.time()
 
@@ -643,15 +701,22 @@ def train_single_config(folder_name, args):
 
         num_chunks = total_iterations // chunk_size
 
-        # Create GNN baseline model
-        print("Creating GNN Baseline TSMC model...")
+        # Build loss logging configuration
+        loss_logging_config = {
+            'enabled': args.enable_loss_logging,
+            'log_every': args.loss_log_every,
+            'save_dir': args.loss_log_dir
+        }
 
-        gnn_baseline = GNN_Baseline_TSMC(
+        # Create model with 11D input features
+        print("Creating GNN Baseline model (11D input)...")
+
+        gnn_baseline = GNN_Baseline_ASAP7Process(
             model=create_maml_gcn_model(
-                node_features=7,
-                pooling='mean',
+                node_features=11,  # 11D features!
+                pooling=pooling,
                 output_dim=1,
-                dropout=0.0,
+                dropout=0.3,
                 conv_hidden_dim=conv_hidden_dim,
                 num_conv_layers=num_conv_layers,
                 fc_hidden_dim=fc_hidden_dim,
@@ -661,35 +726,38 @@ def train_single_config(folder_name, args):
             wd=wd,
             dataset=dataset,
             iteration=chunk_size,
-            batch_size=batch_size
+            batch_size=batch_size,
+            loss_logging_config=loss_logging_config
         )
 
         # Training in chunks
+        iterations_trained = 0
         for chunk in range(num_chunks):
             print(f"\nProcessing chunk {chunk+1}/{num_chunks}")
             chunk_start_time = time.time()
 
-            avg_loss = gnn_baseline.loop(checkpoint_dir=checkpoint_dir)
+            # Calculate starting iteration for this chunk (for loss logging)
+            chunk_start_iteration = iterations_trained
+
+            avg_loss = gnn_baseline.loop(checkpoint_dir=checkpoint_dir, start_iteration=chunk_start_iteration)
+            iterations_trained += chunk_size
 
             torch.cuda.synchronize()
-            chunk_end_time = time.time()
+            chunk_time = time.time() - chunk_start_time
 
-            chunk_time = chunk_end_time - chunk_start_time
             print(f"Chunk {chunk+1} completed in {chunk_time:.2f}s")
             print(f"Average loss: {avg_loss:.6f}")
 
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-                memory_allocated = torch.cuda.memory_allocated() / 1024**3
-                memory_reserved = torch.cuda.memory_reserved() / 1024**3
-                print(f"GPU Memory: {memory_allocated:.2f}GB allocated, {memory_reserved:.2f}GB reserved")
 
             # Save checkpoint
             iterations_completed = (chunk + 1) * chunk_size
             arch_suffix = f"_conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}"
+            pool_suffix = f"_pool{pooling}" if pooling != 'mean' else ""
 
-            checkpoint_path = f"{checkpoint_dir}/gnn_baseline_{folder_name}_{data_type}_{graph_mode}_iter{iterations_completed}{arch_suffix}.pth"
+            checkpoint_path = f"{checkpoint_dir}/gnn_baseline_asap7_process_{data_type}_{graph_mode}_iter{iterations_completed}{arch_suffix}{pool_suffix}.pth"
 
             torch.save({
                 'model_state_dict': gnn_baseline.model.state_dict(),
@@ -697,9 +765,12 @@ def train_single_config(folder_name, args):
                 'norm_stats': norm_stats,
                 'task_norm_stats': gnn_baseline.task_norm_stats,
                 'config': {
-                    'folder_name': folder_name,
                     'data_type': data_type,
                     'graph_mode': graph_mode,
+                    'pooling': pooling,
+                    'voltage_mode': voltage_mode,
+                    'related_pin_only': related_pin_only,
+                    'sampling': sampling,
                     'conv_hidden_dim': conv_hidden_dim,
                     'num_conv_layers': num_conv_layers,
                     'fc_hidden_dim': fc_hidden_dim,
@@ -708,17 +779,16 @@ def train_single_config(folder_name, args):
                     'wd': wd,
                     'batch_size': batch_size,
                     'iterations_completed': iterations_completed,
-                    'avg_loss': avg_loss
+                    'avg_loss': avg_loss,
+                    'node_features': 11
                 }
             }, checkpoint_path)
             print(f"Saved checkpoint: {checkpoint_path}")
 
         # Save final model
-        final_model_dir = "../../../pretrained_models/gnn_baseline_tsmc_final"
-        os.makedirs(final_model_dir, exist_ok=True)
-
         arch_suffix = f"_conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}"
-        final_model_path = f"{final_model_dir}/gnn_baseline_{folder_name}_{data_type}_{graph_mode}_iter{total_iterations}{arch_suffix}.pth"
+        pool_suffix = f"_pool{pooling}" if pooling != 'mean' else ""
+        final_model_path = f"{final_model_dir}/gnn_baseline_asap7_process_{data_type}_{graph_mode}_iter{total_iterations}{arch_suffix}{pool_suffix}.pth"
 
         torch.save({
             'model_state_dict': gnn_baseline.model.state_dict(),
@@ -726,9 +796,12 @@ def train_single_config(folder_name, args):
             'norm_stats': norm_stats,
             'task_norm_stats': gnn_baseline.task_norm_stats,
             'config': {
-                'folder_name': folder_name,
                 'data_type': data_type,
                 'graph_mode': graph_mode,
+                'pooling': pooling,
+                'voltage_mode': voltage_mode,
+                'related_pin_only': related_pin_only,
+                'sampling': sampling,
                 'conv_hidden_dim': conv_hidden_dim,
                 'num_conv_layers': num_conv_layers,
                 'fc_hidden_dim': fc_hidden_dim,
@@ -736,14 +809,24 @@ def train_single_config(folder_name, args):
                 'lr': lr,
                 'wd': wd,
                 'batch_size': batch_size,
-                'total_iterations': total_iterations
+                'total_iterations': total_iterations,
+                'node_features': 11
             }
         }, final_model_path)
 
         print(f"\nSaved final model: {final_model_path}")
 
-        # Cleanup model-specific data
+        # Save loss log if enabled
+        if args.enable_loss_logging and gnn_baseline.iteration_loss_log:
+            loss_log_dir = args.loss_log_dir or f"../../../pretrained_models/loss_logs_baseline_asap7{dir_suffix}"
+            os.makedirs(loss_log_dir, exist_ok=True)
+            loss_log_filename = f"loss_log_baseline_{data_type}_{graph_mode}_iter{total_iterations}{arch_suffix}{pool_suffix}.json"
+            loss_log_path = os.path.join(loss_log_dir, loss_log_filename)
+            gnn_baseline.save_loss_log(loss_log_path)
+
+        # Cleanup
         del gnn_baseline.task_norm_stats
+        del gnn_baseline.iteration_loss_log
         del gnn_baseline.optimizer
         del gnn_baseline.model
         del gnn_baseline
@@ -751,7 +834,6 @@ def train_single_config(folder_name, args):
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            torch.cuda.synchronize()
 
         arch_time = time.time() - arch_start_time
         print(f"\nArchitecture {idx}/{num_combinations} completed in {arch_time/3600:.2f} hours")
@@ -765,15 +847,12 @@ def train_single_config(folder_name, args):
     # Cleanup dataset
     del dataset
     gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
 
-    # Print summary
+    # Summary
     sweep_total_time = time.time() - sweep_start_time
     print(f"\n{'='*80}")
     print(f"TRAINING COMPLETED")
     print(f"{'='*80}")
-    print(f"Folder: {folder_name}")
     print(f"Total architectures trained: {len(trained_models)}")
     print(f"Total time: {sweep_total_time/3600:.2f} hours")
     print(f"\nTrained models:")
@@ -786,78 +865,9 @@ def train_single_config(folder_name, args):
 
 
 def main():
-    """Main function"""
     args = parse_arguments()
-
-    # Convert corner + temperature to folder name
-    if args.corner is not None and args.temperature is not None and args.folder is None:
-        args.folder = get_folder_name(args.corner, args.temperature)
-    elif args.temperature is not None and args.folder is None:
-        # Default to FF corner if only temperature is specified
-        args.folder = f"TSMC_FF_{args.temperature}"
-
-    # Validate arguments
-    if not args.run_all and args.folder is None:
-        print("Error: Either --folder, or --corner + --temperature, or --run_all is required")
-        print("Use --help for usage information")
-        return
-
-    # GPU is set at the top of file before torch import
-    print(f"Using GPU: {args.gpu} (CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES', 'not set')})")
-
-    if args.run_all:
-        # Run all 15 configurations (3 corners x 5 temperatures)
-        total_configs = len(TSMC_FOLDERS)
-        completed = 0
-        failed = []
-
-        print(f"\n{'='*80}")
-        print(f"RUNNING ALL {total_configs} TSMC CONFIGURATIONS (3 corners x 5 temperatures)")
-        print(f"{'='*80}")
-        print(f"Corners: {TSMC_CORNERS}")
-        print(f"Temperatures: {TSMC_TEMPERATURES}")
-        print(f"Folders: {', '.join(TSMC_FOLDERS)}")
-        print(f"Graph mode: {args.graph_mode}")
-        print(f"Data type: {args.data_type}")
-
-        overall_start = time.time()
-
-        for folder_name in TSMC_FOLDERS:
-            config_num = completed + len(failed) + 1
-            print(f"\n{'='*80}")
-            print(f"CONFIG {config_num}/{total_configs}: {folder_name}")
-            print(f"{'='*80}\n")
-
-            try:
-                model_path = train_single_config(folder_name, args)
-                completed += 1
-                print(f"\nConfig {config_num}/{total_configs} completed: {folder_name}")
-            except Exception as e:
-                failed.append(folder_name)
-                print(f"\nConfig {config_num}/{total_configs} failed: {folder_name}")
-                print(f"Error: {e}")
-                import traceback
-                traceback.print_exc()
-            finally:
-                gc.collect()
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                    torch.cuda.synchronize()
-
-        overall_time = time.time() - overall_start
-
-        print(f"\n{'='*80}")
-        print(f"ALL CONFIGURATIONS COMPLETED")
-        print(f"{'='*80}")
-        print(f"Total time: {overall_time/3600:.2f} hours")
-        print(f"Completed: {completed}/{total_configs}")
-        if failed:
-            print(f"Failed: {len(failed)}")
-            for config in failed:
-                print(f"  - {config}")
-    else:
-        # Run single configuration
-        train_single_config(args.folder, args)
+    print(f"Using GPU: {args.gpu}")
+    train_single_config(args)
 
 
 if __name__ == "__main__":

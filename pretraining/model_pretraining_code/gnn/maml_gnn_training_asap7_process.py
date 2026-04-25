@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 """
-MAML GNN Training for TSMC Process Dataset - Unified 3D Format
+MAML GNN Training for ASAP7 Process Dataset - Unified 3D Format
 
-Uses unified datasets from build_gnn_dataset_tsmc_unified.py
+Uses unified datasets from build_gnn_dataset_cached_with_process.py
 Memory-mapped loading (mmap) for large datasets via torch.load(..., mmap=True).
 
 Key Features:
@@ -25,7 +25,6 @@ import os
 import sys
 import glob
 import re
-import json
 
 # Parse GPU argument before importing torch
 def get_gpu_from_args():
@@ -96,7 +95,7 @@ def find_pretrained_gnn_model(model_dir, data_type, graph_mode, innerdiv, meta,
     arch_suffix = f"_conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}{pool_suffix}"
 
     # Search pattern
-    pattern = f"gnn_maml_tsmc_process_{data_type}_{graph_mode}_innerdiv{innerdiv}_meta{meta}_iter*_inner{inner_steps}{arch_suffix}.pth"
+    pattern = f"gnn_maml_asap7_process_{data_type}_{graph_mode}_innerdiv{innerdiv}_meta{meta}_iter*_inner{inner_steps}{arch_suffix}.pth"
 
     search_path = os.path.join(model_dir, pattern)
     matching_files = glob.glob(search_path)
@@ -179,10 +178,10 @@ def functional_forward(model, x, fast_weights):
     return output
 
 
-class TSMCProcessMAMLDataset(Dataset):
+class ASAP7ProcessMAMLDataset(Dataset):
     """
-    PyTorch Dataset for TSMC Process MAML training with mmap loading.
-    Uses tensor-based storage format (same as ASAP7 unified format).
+    PyTorch Dataset for ASAP7 Process MAML training with mmap loading.
+    Uses tensor-based storage format (same as TSMC unified format).
 
     Data format (3D tensor):
     - node_features: [num_libs, total_nodes, num_features] - mmap tensor
@@ -198,7 +197,7 @@ class TSMCProcessMAMLDataset(Dataset):
         Args:
             train_path: Path to train file (train_cell_stage_aware.pth)
             graph_mode: 'full_graph' or 'stage_aware'
-            cache_path_override: Override topology cache path (None = use path in dataset file)
+            cache_path_override: Optional path to override topology cache (for bidir, gatectrl variants)
         """
         self.train_path = train_path
         self.graph_mode = graph_mode
@@ -222,7 +221,7 @@ class TSMCProcessMAMLDataset(Dataset):
         # Load data with mmap
         self._load_data()
 
-        print(f"TSMCProcessMAMLDataset initialized (tensor format, mmap):")
+        print(f"ASAP7ProcessMAMLDataset initialized (tensor format, mmap):")
         print(f"   Train file: {train_path}")
         print(f"   Tasks: {self._num_tasks}")
         print(f"   Libs: {self._num_libs}")
@@ -236,10 +235,13 @@ class TSMCProcessMAMLDataset(Dataset):
         print(f"   Loading with mmap=True (memory-mapped tensors)")
         data = torch.load(self.train_path, weights_only=False, map_location='cpu', mmap=True)
 
-        # Check format (accept both 'tensor' and 'unified_3d')
-        data_format = data.get('format', 'legacy')
-        if data_format not in ['tensor', 'unified_3d']:
-            raise ValueError(f"Expected tensor or unified_3d format, got: {data_format}")
+        # Check format - accept explicit format or infer from keys
+        data_format = data.get('format', None)
+        required_keys = ['node_features', 'outputs', 'node_slices', 'cell_names', 'num_libs', 'num_tasks']
+        has_required_keys = all(k in data for k in required_keys)
+
+        if data_format not in ['tensor', 'unified_3d', None] or (data_format is None and not has_required_keys):
+            raise ValueError(f"Expected tensor/unified_3d format or required keys, got format: {data_format}, keys: {list(data.keys())}")
 
         # Store mmap tensor references
         self._node_features = data['node_features']
@@ -254,7 +256,7 @@ class TSMCProcessMAMLDataset(Dataset):
         self._num_tasks = data['num_tasks']
         self._norm_stats = data.get('norm_stats', None)
 
-        # Load topology cache (use override if provided, otherwise from data file)
+        # Load topology cache - use override if provided, otherwise from data file
         if self.cache_path_override:
             cache_path = self.cache_path_override
             print(f"   Using cache_path override: {cache_path}")
@@ -407,21 +409,19 @@ class TSMCProcessMAMLDataset(Dataset):
         }
 
 
-class GNN_MAML_TSMCProcess:
+class GNN_MAML_ASAP7Process:
     """
-    GNN MAML training with TSMC Process dataset (11D features).
+    GNN MAML training with ASAP7 Process dataset (11D features).
     Meta-learning with inner/outer loop optimization.
     """
 
     def __init__(self, model, inner_lr, meta_lr, K=5, inner_steps=1,
-                 dataset=None, tasks_per_meta_batch=16, temp_mode='typical',
-                 loss_logging_config=None):
+                 dataset=None, tasks_per_meta_batch=16):
         # Dataset
         self.dataset = dataset
         self.topology_cache = dataset.topology_cache if dataset else None
         self.cache_type = dataset.graph_mode if dataset else 'stage_aware'
         self.norm_stats = dataset.norm_stats if dataset else None
-        self.temp_mode = temp_mode  # Temperature normalization mode
 
         self.num_tasks = len(dataset) if dataset else 0
 
@@ -446,18 +446,11 @@ class GNN_MAML_TSMCProcess:
         self.print_every = 200
         self.meta_losses = []
 
-        # Loss logging configuration
-        self.loss_logging_config = loss_logging_config or {}
-        self.enable_loss_logging = self.loss_logging_config.get('enabled', False)
-        self.loss_log_every = self.loss_logging_config.get('log_every', 1000)
-        self.loss_log_dir = self.loss_logging_config.get('save_dir', None)
-        self.iteration_loss_log = []  # List of (iteration, loss) tuples
-
         if torch.cuda.is_available():
             self.model = self.model.to(device)
             print(f"Model moved to {device}")
 
-        print(f"\nGNN MAML TSMC Process Configuration:")
+        print(f"\nGNN MAML ASAP7 Process Configuration:")
         print(f"  Cache type: {self.cache_type}")
         print(f"  Tasks: {self.num_tasks}")
         print(f"  Libs per task: {dataset.num_libs if dataset else 'N/A'}")
@@ -467,8 +460,6 @@ class GNN_MAML_TSMCProcess:
         print(f"  Meta LR: {self.meta_lr}")
         print(f"  Tasks per meta batch: {self.tasks_per_meta_batch}")
         print(f"  Node features: 11D (with process params)")
-        if self.enable_loss_logging:
-            print(f"  Loss logging: enabled (every {self.loss_log_every} iterations)")
 
     def normalize_node_features(self, node_features):
         """Normalize node features using saved statistics"""
@@ -477,8 +468,7 @@ class GNN_MAML_TSMCProcess:
 
         normalized, _ = normalize_node_features_safe(
             node_features,
-            norm_stats=self.norm_stats.get('node_features', self.norm_stats),
-            temp_mode=self.temp_mode
+            norm_stats=self.norm_stats.get('node_features', self.norm_stats)
         )
         return normalized
 
@@ -637,22 +627,14 @@ class GNN_MAML_TSMCProcess:
 
         return loss
 
-    def main_loop_sequential(self, num_iterations, start_iteration=0):
-        """Sequential MAML training loop
-
-        Args:
-            num_iterations: Number of iterations to train
-            start_iteration: Starting iteration number (for cumulative tracking when resuming)
-        """
-        print(f"\nStarting TSMC Process MAML Training")
+    def main_loop_sequential(self, num_iterations):
+        """Sequential MAML training loop"""
+        print(f"\nStarting ASAP7 Process MAML Training")
         print(f"   Total iterations: {num_iterations}")
-        if self.enable_loss_logging:
-            print(f"   Loss logging every: {self.loss_log_every} iterations")
 
         epoch_loss = 0
 
         for iteration in range(1, num_iterations + 1):
-            cumulative_iteration = start_iteration + iteration
             meta_losses = []
 
             for _ in range(self.tasks_per_meta_batch):
@@ -689,73 +671,35 @@ class GNN_MAML_TSMCProcess:
             self.meta_optimiser.step()
             self.meta_optimiser.zero_grad()
 
-            current_loss = meta_loss.item()
-            epoch_loss += current_loss
-
-            # Loss logging at specified intervals
-            if self.enable_loss_logging and cumulative_iteration % self.loss_log_every == 0:
-                self.iteration_loss_log.append({
-                    'iteration': cumulative_iteration,
-                    'loss': current_loss
-                })
-
+            epoch_loss += meta_loss.item()
             if iteration % self.print_every == 0:
                 print(f"{iteration}/{num_iterations} | loss: {epoch_loss / self.print_every:.6f}")
             if iteration % self.plot_every == 0:
                 self.meta_losses.append(epoch_loss / self.plot_every)
                 epoch_loss = 0
 
-    def save_loss_log(self, save_path):
-        """Save iteration loss log to JSON file
-
-        Args:
-            save_path: Path to save the loss log JSON file
-        """
-        if not self.iteration_loss_log:
-            print("No loss log entries to save")
-            return
-
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-
-        log_data = {
-            'config': {
-                'inner_lr': self.inner_lr,
-                'meta_lr': self.meta_lr,
-                'K': self.K,
-                'inner_steps': self.inner_steps,
-                'tasks_per_meta_batch': self.tasks_per_meta_batch,
-                'loss_log_every': self.loss_log_every
-            },
-            'loss_log': self.iteration_loss_log
-        }
-
-        with open(save_path, 'w') as f:
-            json.dump(log_data, f, indent=2)
-
-        print(f"Loss log saved: {save_path} ({len(self.iteration_loss_log)} entries)")
-
 
 # Default dataset path
-DEFAULT_DATASET_DIR = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/GNN_dataset_TSMC"
+DEFAULT_DATASET_DIR = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/GNN_dataset_ASAP7"
 
 
 def parse_arguments():
     """Parse command-line arguments"""
     parser = argparse.ArgumentParser(
-        description='MAML GNN Training for TSMC Process Dataset (11D features)',
+        description='MAML GNN Training for ASAP7 Process Dataset (11D features)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Single training run
-  python maml_gnn_training_tsmc_process.py --graph_mode stage_aware
+  python maml_gnn_training_asap7_process.py --graph_mode stage_aware
 
   # Architecture sweep
-  python maml_gnn_training_tsmc_process.py \\
+  python maml_gnn_training_asap7_process.py \\
       --conv_hidden_dim 32 64 128 \\
       --num_conv_layers 2 3
 
   # Custom hyperparameters
-  python maml_gnn_training_tsmc_process.py --innerdiv 10 --meta_lr 0.0001 --K 5
+  python maml_gnn_training_asap7_process.py --innerdiv 10 --meta_lr 0.0001 --K 5
 """
     )
 
@@ -810,20 +754,6 @@ Examples:
     parser.add_argument('--voltage_mode', type=str, default='all_nodes',
                        choices=['all_nodes', 'vdd_only', 'vdd_mos'],
                        help='Voltage feature mode: all_nodes (default), vdd_only, or vdd_mos')
-    parser.add_argument('--normalization', type=str, default='zscore',
-                       choices=['zscore', 'minmax'],
-                       help='Normalization method: zscore (default) or minmax')
-    parser.add_argument('--temp_mode', type=str, default='typical',
-                       choices=['typical', 'temp_all'],
-                       help='Temperature mode: typical (temp on MOS only) or temp_all (temp on all nodes)')
-    parser.add_argument('--cache_path', type=str, default=None,
-                       help='Override topology cache path (default: use cache_path stored in dataset file)')
-    parser.add_argument('--topology_suffix', type=str, default='',
-                       help='Topology suffix for dataset file naming (e.g., _inputport). Note: gatectrl only affects cache, not train data.')
-    parser.add_argument('--inputport', action='store_true',
-                       help='Use inputport topology (adds _inputport to topology_suffix). Inputport adds input port nodes to graph.')
-    parser.add_argument('--related_pin_only', action='store_true',
-                       help='Use related_pin_only dataset (adds _relpin to topology_suffix). Input slew assigned only to triggering input port.')
 
     # Resume training options
     parser.add_argument('--resume', type=str, default=None,
@@ -833,13 +763,15 @@ Examples:
     parser.add_argument('--additional_iterations', type=int, default=None,
                        help='Additional iterations to train when resuming (overrides total_iterations)')
 
-    # Loss logging options
-    parser.add_argument('--enable_loss_logging', action='store_true',
-                       help='Enable training loss logging at specified intervals')
-    parser.add_argument('--loss_log_every', type=int, default=1000,
-                       help='Log training loss every N iterations (default: 1000)')
-    parser.add_argument('--loss_log_dir', type=str, default=None,
-                       help='Directory to save loss logs (default: loss_logs/)')
+    # Topology options
+    parser.add_argument('--cache_path', type=str, default=None,
+                       help='Path to topology cache file. gatectrl is auto-detected from filename.')
+    parser.add_argument('--inputport', action='store_true',
+                       help='Use inputport topology (adds input port nodes to graph)')
+    parser.add_argument('--related_pin_only', action='store_true',
+                       help='Use related_pin_only dataset (adds _relpin to topology_suffix). Input slew assigned only to triggering input port.')
+    parser.add_argument('--sampling', type=str, default='10pct',
+                       help='Sampling percentage for train data: "full" (no suffix) or "Xpct" (e.g., "10pct", "50pct"). Default: 10pct')
 
     return parser.parse_args()
 
@@ -858,34 +790,9 @@ def train_single_config(args):
     data_type = args.data_type
     graph_mode = args.graph_mode
     voltage_mode = args.voltage_mode
-    normalization = args.normalization
-    temp_mode = args.temp_mode
     dataset_dir = args.dataset_dir
-    cache_path = args.cache_path
-    topology_suffix = args.topology_suffix
-
-    # Add _inputport to topology_suffix if --inputport flag is set
-    # Note: gatectrl only affects adjacency (cache), not node features (train data)
-    if args.inputport and '_inputport' not in topology_suffix:
-        topology_suffix = '_inputport' if not topology_suffix else topology_suffix + '_inputport'
-
-    # related_pin_only is handled as separate slew_suffix (comes after temp_suffix in file naming)
-
-    # Extract gatectrl/bidir/directmos suffix from cache_path for checkpoint naming
-    # (gatectrl/bidir/directmos don't affect train data, but affect model training via adjacency)
-    cache_suffix = ''
-    if cache_path:
-        cache_basename = os.path.basename(cache_path).replace('.pth', '')
-        if '_gatectrl' in cache_basename:
-            cache_suffix += '_gatectrl'
-        if '_bidir' in cache_basename:
-            cache_suffix += '_bidir'
-        if '_directmos' in cache_basename:
-            cache_suffix += '_directmos'
-
-    # checkpoint_suffix: combines cache_suffix (gatectrl/bidir/directmos) + topology_suffix (inputport)
-    # This ensures different cache configs get separate checkpoint directories
-    checkpoint_suffix = cache_suffix + topology_suffix
+    pooling_mode = args.pooling
+    output_node_idx = args.output_node_idx
 
     # Calculate inner_lr
     base_lr = 0.001
@@ -902,16 +809,60 @@ def train_single_config(args):
     num_combinations = len(arch_combinations)
     is_sweep = num_combinations > 1
 
+    # Topology suffix construction
+    # - inputport: adds input port nodes to graph (affects train file and checkpoint)
+    # - gatectrl: only affects adjacency matrix (auto-detected from cache_path for checkpoint naming)
+    topology_suffix = ""
+    if args.inputport:
+        topology_suffix = "_inputport"
+
+    # related_pin_only is handled as separate slew_suffix (comes after topology_suffix in file naming)
+    slew_suffix = "_relpin" if args.related_pin_only else ""
+
+    # Voltage mode suffix for train file and checkpoint naming
+    voltage_suffix = f"_{voltage_mode}" if voltage_mode != 'all_nodes' else ""
+
+    # Sampling suffix for train file and checkpoint naming
+    # "full" = _full suffix, "Xpct" = _Xpct suffix (e.g., "10pct" -> "_10pct")
+    sampling = args.sampling.lower()
+    sampling_suffix = f"_{sampling}"
+
+    # Extract cache suffixes from cache_path for checkpoint naming
+    # Supported: _gatectrl, _bidir, _directmos (only affect adjacency matrix, not node features)
+    cache_suffix = ""
+    cache_path = args.cache_path
+    if cache_path:
+        cache_basename = os.path.basename(cache_path).replace('.pth', '')
+        if '_gatectrl' in cache_basename:
+            cache_suffix += "_gatectrl"
+        if '_bidir' in cache_basename:
+            cache_suffix += "_bidir"
+        if '_directmos' in cache_basename:
+            cache_suffix += "_directmos"
+
+    # checkpoint_suffix: combines cache_suffix (gatectrl/bidir/directmos) + topology_suffix (inputport) + voltage_suffix + slew_suffix (relpin) + sampling_suffix
+    # - gatectrl/bidir/directmos only affects adjacency matrix, so train file doesn't need it
+    # - inputport adds nodes, so both train file and checkpoint need it
+    # - voltage_mode affects node features, so both train file and checkpoint need it
+    # - relpin affects input_slew assignment, so both train file and checkpoint need it
+    # - sampling affects train data percentage, so both train file and checkpoint need it
+    checkpoint_suffix = cache_suffix + topology_suffix + voltage_suffix + slew_suffix + sampling_suffix
+
     print(f"\n{'#'*80}")
-    print(f"# MAML GNN Training - TSMC Process (11D features)")
+    print(f"# MAML GNN Training - ASAP7 Process (11D features)")
     print(f"{'#'*80}")
     print(f"Dataset: {dataset_dir}")
     print(f"Data type: {data_type}")
     print(f"Graph mode: {graph_mode}")
-    print(f"Topology suffix (train file): '{topology_suffix}'")
-    print(f"Checkpoint suffix: '{checkpoint_suffix}'")
     print(f"Voltage mode: {voltage_mode}")
-    print(f"Normalization: {normalization}")
+    print(f"Topology suffix (for train file): {topology_suffix if topology_suffix else '(none)'}")
+    print(f"Voltage suffix: {voltage_suffix if voltage_suffix else '(none)'}")
+    print(f"Slew suffix (related_pin_only): {slew_suffix if slew_suffix else '(none)'}")
+    print(f"Sampling: {args.sampling} (suffix: {sampling_suffix if sampling_suffix else '(none)'})")
+    print(f"Cache suffix (from cache_path): {cache_suffix if cache_suffix else '(none)'}")
+    print(f"Checkpoint suffix: {checkpoint_suffix if checkpoint_suffix else '(none)'}")
+    print(f"Pooling: {pooling_mode}")
+    print(f"Output node idx (fallback): {output_node_idx}")
     print(f"Inner div: {innerdiv} (inner_lr = {inner_lr})")
     print(f"Meta LR: {meta_lr}")
     print(f"Inner steps: {inner_steps}")
@@ -927,25 +878,20 @@ def train_single_config(args):
     print("\nCreating dataset (mmap loading)...")
     data_load_start = time.time()
 
-    # Construct train file path (order must match build_gnn_dataset_process_cached_tsmc.py)
-    # Order: topology_suffix → voltage_suffix → temp_suffix → slew_suffix
-    voltage_suffix = f"_{voltage_mode}" if voltage_mode != 'all_nodes' else ""
-    norm_suffix = "_minmax" if normalization == 'minmax' else ""
-    temp_suffix = "_temp_all" if temp_mode == 'temp_all' else ""
-    slew_suffix = "_relpin" if args.related_pin_only else ""
-    # topology_suffix includes _inputport (affects node features). gatectrl only affects cache, not train file.
-    train_file = f"train_{data_type}_{graph_mode}{topology_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}.pth"
+    # Construct train file path (includes topology_suffix for inputport, voltage_suffix, and slew_suffix for related_pin_only)
+    train_file = f"train_{data_type}_{graph_mode}{topology_suffix}{voltage_suffix}{slew_suffix}{sampling_suffix}.pth"
     train_path = os.path.join(dataset_dir, train_file)
+    print(f"Train file: {train_file}")
 
     if not os.path.exists(train_path):
         print(f"Train file not found: {train_path}")
         print(f"Looking in dataset_dir: {dataset_dir}")
         raise FileNotFoundError(f"Train file not found: {train_path}")
 
-    dataset = TSMCProcessMAMLDataset(
+    dataset = ASAP7ProcessMAMLDataset(
         train_path=train_path,
         graph_mode=graph_mode,
-        cache_path_override=cache_path
+        cache_path_override=args.cache_path if args.cache_path else None
     )
 
     data_load_time = time.time() - data_load_start
@@ -953,11 +899,13 @@ def train_single_config(args):
 
     norm_stats = dataset.norm_stats
 
-    # Checkpoint directories (include checkpoint_suffix which combines gatectrl + inputport, plus other suffixes)
-    checkpoint_dir = f"../../../pretrained_models/gnn_maml_tsmc_process_checkpoints{checkpoint_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}"
-    final_model_dir = f"../../../pretrained_models/gnn_maml_tsmc_process_final{checkpoint_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}"
+    # Checkpoint directories (include checkpoint_suffix for gatectrl/inputport variants)
+    checkpoint_dir = f"../../../pretrained_models/gnn_maml_asap7_process_checkpoints{checkpoint_suffix}"
+    final_model_dir = f"../../../pretrained_models/gnn_maml_asap7_process_final{checkpoint_suffix}"
     os.makedirs(checkpoint_dir, exist_ok=True)
     os.makedirs(final_model_dir, exist_ok=True)
+    print(f"Checkpoint dir: {checkpoint_dir}")
+    print(f"Final model dir: {final_model_dir}")
 
     # Train each architecture
     trained_models = []
@@ -978,20 +926,18 @@ def train_single_config(args):
         print(f"  Num FC layers: {num_fc_layers}")
 
         # Create model with 11D input features
-        pooling_mode = args.pooling
-        output_node_idx = args.output_node_idx
-        print(f"Creating GNN MAML model (11D input, pooling={pooling_mode})...")
+        print("Creating GNN MAML model (11D input)...")
 
         gnn_model = create_maml_gcn_model(
             node_features=11,  # 11D features!
             pooling=pooling_mode,
+            output_node_idx=output_node_idx,
             output_dim=1,
             dropout=0.0,
             conv_hidden_dim=conv_hidden_dim,
             num_conv_layers=num_conv_layers,
             fc_hidden_dim=fc_hidden_dim,
-            num_fc_layers=num_fc_layers,
-            output_node_idx=output_node_idx
+            num_fc_layers=num_fc_layers
         )
 
         # Resume training logic
@@ -1046,23 +992,14 @@ def train_single_config(args):
         if additional_iterations % chunk_size > 0:
             num_chunks += 1  # Add partial chunk if needed
 
-        # Build loss logging configuration
-        loss_logging_config = {
-            'enabled': args.enable_loss_logging,
-            'log_every': args.loss_log_every,
-            'save_dir': args.loss_log_dir
-        }
-
-        gnn_maml = GNN_MAML_TSMCProcess(
+        gnn_maml = GNN_MAML_ASAP7Process(
             model=gnn_model,
             inner_lr=inner_lr,
             meta_lr=meta_lr,
             K=K,
             inner_steps=inner_steps,
             dataset=dataset,
-            tasks_per_meta_batch=tasks_per_meta_batch,
-            temp_mode=temp_mode,
-            loss_logging_config=loss_logging_config
+            tasks_per_meta_batch=tasks_per_meta_batch
         )
 
         # Training in chunks
@@ -1073,20 +1010,18 @@ def train_single_config(args):
             chunk_iters = min(chunk_size, remaining)
             if chunk_iters <= 0:
                 break
+
             print(f"\nProcessing chunk {chunk+1}/{num_chunks} ({chunk_iters} iterations)")
             chunk_start_time = time.time()
 
-            # Calculate starting iteration for this chunk (for loss logging)
-            chunk_start_iteration = start_iteration + iterations_trained
-
             try:
-                gnn_maml.main_loop_sequential(num_iterations=chunk_iters, start_iteration=chunk_start_iteration)
+                gnn_maml.main_loop_sequential(num_iterations=chunk_iters)
             except Exception as e:
                 print(f"Training failed: {e}")
                 print("Reducing learning rates and retrying...")
                 gnn_maml.inner_lr *= 0.5
                 gnn_maml.meta_lr *= 0.5
-                gnn_maml.main_loop_sequential(num_iterations=chunk_iters // 2, start_iteration=chunk_start_iteration)
+                gnn_maml.main_loop_sequential(num_iterations=chunk_iters // 2)
 
             iterations_trained += chunk_iters
             torch.cuda.synchronize()
@@ -1100,10 +1035,11 @@ def train_single_config(args):
 
             # Save checkpoint with cumulative iteration count
             cumulative_iterations = start_iteration + iterations_trained
-            pool_suffix = f"_pool{pooling_mode}" if pooling_mode != 'mean' else ""
-            arch_suffix = f"_conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}{pool_suffix}"
+            arch_suffix = f"_conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}"
+            # Add pooling suffix only for non-mean pooling
+            pooling_suffix = f"_pool{pooling_mode}" if pooling_mode != 'mean' else ""
 
-            checkpoint_path = f"{checkpoint_dir}/gnn_maml_tsmc_process_{data_type}_{graph_mode}_innerdiv{innerdiv}_meta{tasks_per_meta_batch}_iter{cumulative_iterations}_inner{inner_steps}{arch_suffix}.pth"
+            checkpoint_path = f"{checkpoint_dir}/gnn_maml_asap7_process_{data_type}_{graph_mode}_innerdiv{innerdiv}_meta{tasks_per_meta_batch}_iter{cumulative_iterations}_inner{inner_steps}{arch_suffix}{pooling_suffix}.pth"
 
             torch.save({
                 'model_state_dict': gnn_maml.model.state_dict(),
@@ -1112,17 +1048,13 @@ def train_single_config(args):
                 'config': {
                     'data_type': data_type,
                     'graph_mode': graph_mode,
-                    'topology_suffix': topology_suffix,
-                    'slew_suffix': slew_suffix,
-                    'checkpoint_suffix': checkpoint_suffix,
-                    'cache_suffix': cache_suffix,
-                    'temp_mode': temp_mode,
+                    'voltage_mode': voltage_mode,
+                    'pooling': pooling_mode,
+                    'output_node_idx': output_node_idx,
                     'conv_hidden_dim': conv_hidden_dim,
                     'num_conv_layers': num_conv_layers,
                     'fc_hidden_dim': fc_hidden_dim,
                     'num_fc_layers': num_fc_layers,
-                    'pooling': pooling_mode,
-                    'output_node_idx': output_node_idx,
                     'inner_steps': inner_steps,
                     'inner_lr': inner_lr,
                     'meta_lr': meta_lr,
@@ -1132,7 +1064,12 @@ def train_single_config(args):
                     'start_iteration': start_iteration,
                     'additional_iterations_trained': iterations_trained,
                     'meta_losses': gnn_maml.meta_losses,
-                    'node_features': 11
+                    'node_features': 11,
+                    'topology_suffix': topology_suffix,
+                    'voltage_suffix': voltage_suffix,
+                    'slew_suffix': slew_suffix,
+                    'cache_suffix': cache_suffix,
+                    'checkpoint_suffix': checkpoint_suffix
                 }
             }, checkpoint_path)
             print(f"Saved checkpoint: {checkpoint_path}")
@@ -1140,9 +1077,10 @@ def train_single_config(args):
 
         # Save final model with cumulative iteration count
         final_iteration = start_iteration + iterations_trained
-        pool_suffix = f"_pool{pooling_mode}" if pooling_mode != 'mean' else ""
-        arch_suffix = f"_conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}{pool_suffix}"
-        final_model_path = f"{final_model_dir}/gnn_maml_tsmc_process_{data_type}_{graph_mode}_innerdiv{innerdiv}_meta{tasks_per_meta_batch}_iter{final_iteration}_inner{inner_steps}{arch_suffix}.pth"
+        arch_suffix = f"_conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}"
+        # Add pooling suffix only for non-mean pooling
+        pooling_suffix = f"_pool{pooling_mode}" if pooling_mode != 'mean' else ""
+        final_model_path = f"{final_model_dir}/gnn_maml_asap7_process_{data_type}_{graph_mode}_innerdiv{innerdiv}_meta{tasks_per_meta_batch}_iter{final_iteration}_inner{inner_steps}{arch_suffix}{pooling_suffix}.pth"
 
         torch.save({
             'model_state_dict': gnn_maml.model.state_dict(),
@@ -1151,17 +1089,13 @@ def train_single_config(args):
             'config': {
                 'data_type': data_type,
                 'graph_mode': graph_mode,
-                'topology_suffix': topology_suffix,
-                'slew_suffix': slew_suffix,
-                'checkpoint_suffix': checkpoint_suffix,
-                'cache_suffix': cache_suffix,
-                'temp_mode': temp_mode,
+                'voltage_mode': voltage_mode,
+                'pooling': pooling_mode,
+                'output_node_idx': output_node_idx,
                 'conv_hidden_dim': conv_hidden_dim,
                 'num_conv_layers': num_conv_layers,
                 'fc_hidden_dim': fc_hidden_dim,
                 'num_fc_layers': num_fc_layers,
-                'pooling': pooling_mode,
-                'output_node_idx': output_node_idx,
                 'inner_steps': inner_steps,
                 'inner_lr': inner_lr,
                 'innerdiv': innerdiv,
@@ -1171,7 +1105,12 @@ def train_single_config(args):
                 'start_iteration': start_iteration,
                 'additional_iterations_trained': iterations_trained,
                 'meta_losses': gnn_maml.meta_losses,
-                'node_features': 11
+                'node_features': 11,
+                'topology_suffix': topology_suffix,
+                'voltage_suffix': voltage_suffix,
+                'slew_suffix': slew_suffix,
+                'cache_suffix': cache_suffix,
+                'checkpoint_suffix': checkpoint_suffix
             }
         }, final_model_path)
 
@@ -1179,17 +1118,8 @@ def train_single_config(args):
         print(f"   Final model: {final_model_path}")
         print(f"   Final cumulative iteration: {final_iteration}")
 
-        # Save loss log if enabled
-        if args.enable_loss_logging and gnn_maml.iteration_loss_log:
-            loss_log_dir = args.loss_log_dir or f"../../../pretrained_models/loss_logs{checkpoint_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}"
-            os.makedirs(loss_log_dir, exist_ok=True)
-            loss_log_filename = f"loss_log_{data_type}_{graph_mode}_innerdiv{innerdiv}_meta{tasks_per_meta_batch}_iter{final_iteration}_inner{inner_steps}{arch_suffix}.json"
-            loss_log_path = os.path.join(loss_log_dir, loss_log_filename)
-            gnn_maml.save_loss_log(loss_log_path)
-
         # Cleanup
         del gnn_maml.task_norm_stats
-        del gnn_maml.iteration_loss_log
         del gnn_maml.weights
         del gnn_maml.meta_optimiser
         del gnn_maml.model

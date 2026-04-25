@@ -1,6 +1,14 @@
 #!/bin/bash
-# MAML GNN Training Sweep for TSMC Process Dataset (Unified 3D Format)
-# Uses pre-processed TSMC unified dataset with 11D node features
+# MAML GNN Training Sweep for ASAP7 Process Dataset (Unified 3D Format)
+# Uses pre-processed ASAP7 unified dataset with 11D node features
+#
+# Pooling Options (set in JSON config):
+#   - mean: Global mean pooling (default, baseline)
+#   - max: Global max pooling
+#   - add: Global sum pooling
+#   - output: Output-node-only pooling (extracts only output node embedding)
+#
+# Output node index is dynamically determined from topology cache.
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 cd "$SCRIPT_DIR"
@@ -10,11 +18,17 @@ if [ $# -lt 1 ]; then
     echo "Usage: $0 <config.json> [--dry-run] [--no-commit]"
     echo ""
     echo "Example:"
-    echo "  $0 json_configs/gnn_maml_tsmc_process_sweep_config.json"
-    echo "  $0 json_configs/gnn_maml_tsmc_process_sweep_config.json --dry-run"
+    echo "  $0 json_configs/gnn_maml_asap7_process_sweep_config.json"
+    echo "  $0 json_configs/gnn_maml_asap7_process_sweep_config.json --dry-run"
     echo ""
-    echo "Note: Requires TSMC unified dataset to be pre-generated."
-    echo "      Run build_gnn_dataset_tsmc_unified.py first."
+    echo "Note: Requires ASAP7 unified dataset to be pre-generated."
+    echo "      Run build_gnn_dataset_cached_with_process.py first."
+    echo ""
+    echo "Pooling Options (set 'pooling' in JSON config):"
+    echo "  - mean: Global mean pooling (default)"
+    echo "  - max: Global max pooling"
+    echo "  - add: Global sum pooling"
+    echo "  - output: Output-node-only pooling"
     exit 1
 fi
 
@@ -48,7 +62,7 @@ if [ ! -f "$CONFIG_FILE" ]; then
 fi
 
 echo "=========================================="
-echo "MAML GNN Training - TSMC Process (Unified)"
+echo "MAML GNN Training - ASAP7 Process (Unified)"
 echo "=========================================="
 echo "Config file: $CONFIG_FILE"
 echo ""
@@ -62,12 +76,12 @@ if [ "$NO_COMMIT" = false ] && [ "$DRY_RUN" = false ]; then
             echo "No changes to commit (config file unchanged)"
         else
             TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
-            COMMIT_MSG="Start MAML GNN TSMC Process sweep: $(basename $CONFIG_FILE)
+            COMMIT_MSG="Start MAML GNN ASAP7 Process sweep: $(basename $CONFIG_FILE)
 
 Experiment Configuration:
 - Config file: $CONFIG_FILE
 - Timestamp: $TIMESTAMP
-- Dataset: TSMC Process (11D node features: 7 base + 4 process params)
+- Dataset: ASAP7 Process (11D node features: 7 base + 4 process params)
 
 Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>
 "
@@ -91,8 +105,33 @@ fi
 
 # Parse JSON config
 EXPERIMENT_NAME=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['experiment_name'])")
-BASE_CONFIG=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print(' '.join([f'--{k} {v}' if not isinstance(v, bool) else (f'--{k}' if v else '') for k,v in c.items()]))")
+# Parse base_config, handling inputport and related_pin_only specially (boolean flags)
+BASE_CONFIG=$(python3 -c "
+import json
+c = json.load(open('$CONFIG_FILE'))['base_config']
+args = []
+for k, v in c.items():
+    if k == 'inputport':
+        if v:
+            args.append('--inputport')
+    elif k == 'related_pin_only':
+        if v:
+            args.append('--related_pin_only')
+    elif isinstance(v, bool):
+        if v:
+            args.append(f'--{k}')
+    else:
+        args.append(f'--{k} {v}')
+print(' '.join(args))
+")
 SWEEP_PARAMS=$(python3 -c "import json; s=json.load(open('$CONFIG_FILE'))['sweep_params']; print(' '.join([f'--{k} {\" \".join(map(str, v))}' for k,v in s.items()]))")
+
+# Parse topology options for display
+INPUTPORT=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('enabled' if c.get('inputport', False) else 'disabled')")
+RELATED_PIN_ONLY=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('enabled' if c.get('related_pin_only', False) else 'disabled')")
+SAMPLING=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('sampling', '10pct'))")
+VOLTAGE_MODE=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('voltage_mode', 'all_nodes'))")
+CACHE_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('cache_path', ''))")
 
 # Parse resume config (optional)
 RESUME_CONFIG=$(python3 -c "
@@ -109,28 +148,8 @@ if resume_config.get('additional_iterations'):
 print(' '.join(args))
 ")
 
-# Parse loss logging config (optional)
-LOSS_LOGGING_CONFIG=$(python3 -c "
-import json
-config = json.load(open('$CONFIG_FILE'))
-loss_logging = config.get('loss_logging', {})
-args = []
-if loss_logging.get('enabled', False):
-    args.append('--enable_loss_logging')
-    if loss_logging.get('log_every'):
-        args.append(f'--loss_log_every {loss_logging[\"log_every\"]}')
-    if loss_logging.get('save_dir'):
-        args.append(f'--loss_log_dir {loss_logging[\"save_dir\"]}')
-print(' '.join(args))
-")
-
 # Calculate total combinations
 TOTAL_COMBINATIONS=$(python3 -c "import json, itertools; s=json.load(open('$CONFIG_FILE'))['sweep_params']; print(len(list(itertools.product(*s.values()))))")
-
-# Parse topology options for display
-INPUTPORT=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('enabled' if c.get('inputport', False) else 'disabled')")
-RELATED_PIN_ONLY=$(python3 -c "import json; c=json.load(open('$CONFIG_FILE'))['base_config']; print('enabled' if c.get('related_pin_only', False) else 'disabled')")
-CACHE_PATH=$(python3 -c "import json; print(json.load(open('$CONFIG_FILE'))['base_config'].get('cache_path', ''))")
 
 echo "Experiment: $EXPERIMENT_NAME"
 echo "Total combinations: $TOTAL_COMBINATIONS"
@@ -138,6 +157,8 @@ echo ""
 echo "Topology settings:"
 echo "  Inputport: $INPUTPORT"
 echo "  Related pin only: $RELATED_PIN_ONLY"
+echo "  Sampling: $SAMPLING"
+echo "  Voltage mode: $VOLTAGE_MODE"
 if [ -n "$CACHE_PATH" ]; then
     echo "  Cache path: $CACHE_PATH"
     # Show auto-detected topology options from cache_path
@@ -156,19 +177,10 @@ fi
 if [ -n "$RESUME_CONFIG" ]; then
     echo "Resume config: $RESUME_CONFIG"
 fi
-if [ -n "$LOSS_LOGGING_CONFIG" ]; then
-    echo "Loss logging: $LOSS_LOGGING_CONFIG"
-fi
 echo ""
 
-# Build cache_path config if specified
-CACHE_PATH_CONFIG=""
-if [ -n "$CACHE_PATH" ]; then
-    CACHE_PATH_CONFIG="--cache_path $CACHE_PATH"
-fi
-
-# Build command - use TSMC Process version
-FULL_CMD="python -u maml_gnn_training_tsmc_process.py $BASE_CONFIG $SWEEP_PARAMS $RESUME_CONFIG $LOSS_LOGGING_CONFIG $CACHE_PATH_CONFIG"
+# Build command - use ASAP7 Process version
+FULL_CMD="python -u maml_gnn_training_asap7_process.py $BASE_CONFIG $SWEEP_PARAMS $RESUME_CONFIG"
 
 if [ "$DRY_RUN" = true ]; then
     echo "DRY RUN MODE"
@@ -177,50 +189,35 @@ if [ "$DRY_RUN" = true ]; then
     echo "$FULL_CMD"
     echo ""
     echo "This will:"
-    echo "  1. Load TSMC Process unified dataset (11D node features)"
+    echo "  1. Load ASAP7 Process unified dataset (11D node features)"
     echo "  2. Train $TOTAL_COMBINATIONS architectures sequentially"
-    echo "  3. Save all models to pretrained_models/gnn_maml_tsmc_process_final[_vdd_only|_vdd_mos]/"
+    echo "  3. Save all models to pretrained_models/gnn_maml_asap7_process_final/"
+    echo ""
+    echo "Pooling: (configured in JSON config)"
+    echo "  - mean (default): Global mean pooling"
+    echo "  - output: Output-node-only pooling"
     echo ""
     echo "Supported voltage_mode options:"
     echo "  - all_nodes: Voltage applied to all nodes (default)"
     echo "  - vdd_only: Voltage only on VDD node, 0 elsewhere"
     echo "  - vdd_mos: Voltage on VDD and MOS transistor nodes only"
     echo ""
-    echo "Supported temp_mode options:"
-    echo "  - typical: Temperature on MOS nodes only (default)"
-    echo "  - temp_all: Temperature on all nodes"
-    echo ""
-    echo "Supported topology_suffix options:"
-    echo "  - (empty): Default topology"
-    echo "  - _gatectrl: With gate control edges (cache only)"
-    echo "  - _bidir: With bidirectional edges (cache only)"
-    echo "  - _directmos: Skip intermediate nodes, direct MOS-to-MOS (cache only)"
-    echo "  - _inputport: With input port nodes"
-    echo "  - _relpin: Input slew only on related pin's MOS/port"
-    echo "  - Combinations: _directmos_inputport, _bidir_inputport, etc."
-    echo ""
-    echo "Supported pooling options:"
-    echo "  - mean: Global mean pooling (default)"
-    echo "  - max: Global max pooling"
-    echo "  - add: Global sum pooling"
-    echo "  - output: Output-node-only pooling"
+    echo "Topology options:"
+    echo "  - inputport: Adds input port nodes to graph (affects train file)"
+    echo "  - related_pin_only: Input slew assigned only to related pin's MOS/port"
+    echo "  - sampling: 'full' or 'Xpct' (e.g., '10pct', '50pct') - always adds _{sampling} suffix"
     echo ""
     echo "Resume training options (in resume_config):"
     echo "  - auto_resume: true/false - Auto-find latest checkpoint"
     echo "  - resume: path - Specific checkpoint file to resume from"
     echo "  - additional_iterations: N - Train N more iterations when resuming"
     echo ""
-    echo "Loss logging options (in loss_logging):"
-    echo "  - enabled: true/false - Enable/disable loss logging"
-    echo "  - log_every: N - Log loss every N iterations (default: 1000)"
-    echo "  - save_dir: path - Directory to save loss logs (default: loss_logs/)"
-    echo ""
     echo "Dry run complete. Use without --dry-run to execute."
     exit 0
 fi
 
 # Execute
-echo "Starting TSMC Process sweep..."
+echo "Starting ASAP7 Process sweep..."
 echo ""
 echo "Command:"
 echo "$FULL_CMD"
