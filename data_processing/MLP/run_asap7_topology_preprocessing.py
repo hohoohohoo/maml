@@ -130,8 +130,11 @@ def get_parameters(dir_index, topology_type):
     if topology_type == 'intra':
         test_cell_types = ["AND2x6", "NAND3x2", "NOR2xp67", "OR2x6"]
     else:
-        test_cell_types = ["MAJIxp5", "MAJx2", "MAJx3", "HAxp5", "FAx1",
-                          "XOR2xp5", "XOR2x2", "XOR2x1", "XNOR2xp5", "XNOR2x2", "XNOR2x1"]
+        test_cell_types = [
+                        #     "MAJIxp5", "MAJx2", "MAJx3", "HAxp5", "FAx1",
+                        #   "XOR2xp5", "XOR2x2", "XOR2x1", "XNOR2xp5", "XNOR2x2", "XNOR2x1",
+                          "A2O1A1O1Ixp25", "AO21x1", "AO32x1",
+                          "O2A1O1Ixp5", "OAI22x1"]
 
     return {
         'data_dir': data_dir,
@@ -189,7 +192,7 @@ def build_command(dir_index, delay_type, topology_type, params, train_only=False
     else:  # agnostic
         output_suffix = 'topology_agnostic_data'
 
-    output_dir = f"../dataset_all/temp_dataset_ASAP7/{output_suffix}"
+    output_dir = f"../../dataset_all/temp_dataset_ASAP7/{output_suffix}"
 
     # Create temporary directory with symbolic links
     temp_data_dir = f"{output_dir}/temp_combined_data_{delay_type}_{topology_type}_{dir_index}"

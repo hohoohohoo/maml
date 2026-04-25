@@ -138,7 +138,7 @@ def filter_pin_data_by_cell_type(pin_data, target_cell_types):
     
     return test_pins, train_pins
 
-def process_all_data(data_dirs, output_dir, target_cell_types, param_a, param_b, param_c, delay_type='transition', train_only=False):
+def process_all_data(data_dirs, output_dir, target_cell_types, param_a, param_b, param_c, delay_type='transition', train_only=False, test_only=False):
     """
     Process all TSMC data with abc parameter mapping
 
@@ -152,9 +152,9 @@ def process_all_data(data_dirs, output_dir, target_cell_types, param_a, param_b,
 
     # Dynamically import the appropriate libdata_extract module
     if delay_type == 'cell':
-        libdata_extract = importlib.import_module('libdata_extract_MAML_cell')
+        libdata_extract = importlib.import_module('utils.libdata_extract_MAML_cell')
     else:  # transition
-        libdata_extract = importlib.import_module('libdata_extract_MAML_transition')
+        libdata_extract = importlib.import_module('utils.libdata_extract_MAML_transition')
 
     parse_liberty_pin_blocks = libdata_extract.parse_liberty_pin_blocks
     flatten_pin_data = libdata_extract.flatten_pin_data
@@ -312,22 +312,23 @@ def process_all_data(data_dirs, output_dir, target_cell_types, param_a, param_b,
             test_pins, train_pins = filter_pin_data_by_cell_type(pin_data, target_cell_types)
 
             # Process train data for this voltage sweep
-            if train_pins:
-                train_datasets = transform_all_samples(train_pins, cap_data, lib_prefix="tsmc", abc_params=abc_params)
-                if train_datasets:
-                    train_inputs = [sample['input'] for sample in train_datasets]
-                    train_outputs = [sample['output'] for sample in train_datasets]
-                    lib_train_input = torch.tensor(train_inputs, dtype=torch.float32)  # [y, 9]
-                    lib_train_output = torch.tensor(train_outputs, dtype=torch.float32)  # [y]
+            if not test_only:
+                if train_pins:
+                    train_datasets = transform_all_samples(train_pins, cap_data, lib_prefix="tsmc", abc_params=abc_params)
+                    if train_datasets:
+                        train_inputs = [sample['input'] for sample in train_datasets]
+                        train_outputs = [sample['output'] for sample in train_datasets]
+                        lib_train_input = torch.tensor(train_inputs, dtype=torch.float32)  # [y, 9]
+                        lib_train_output = torch.tensor(train_outputs, dtype=torch.float32)  # [y]
 
-                    # Combine input and output into single tensor: [y, 10] where last column is output
-                    combined_train = torch.cat([lib_train_input, lib_train_output.unsqueeze(1)], dim=1)
-                    train_voltage_data.append(combined_train)
-                    total_train_samples += lib_train_input.shape[0]
+                        # Combine input and output into single tensor: [y, 10] where last column is output
+                        combined_train = torch.cat([lib_train_input, lib_train_output.unsqueeze(1)], dim=1)
+                        train_voltage_data.append(combined_train)
+                        total_train_samples += lib_train_input.shape[0]
+                    else:
+                        train_voltage_data.append(torch.empty(0, 10, dtype=torch.float32))
                 else:
                     train_voltage_data.append(torch.empty(0, 10, dtype=torch.float32))
-            else:
-                train_voltage_data.append(torch.empty(0, 10, dtype=torch.float32))
 
             # Process test data for this voltage sweep
             if not train_only:
@@ -349,7 +350,7 @@ def process_all_data(data_dirs, output_dir, target_cell_types, param_a, param_b,
                     test_voltage_data.append(torch.empty(0, 10, dtype=torch.float32))
 
         # Stack voltage data for this condition: [61, samples, 10]
-        if train_voltage_data:
+        if train_voltage_data and not test_only:
             # Find max samples for this condition across all voltages
             max_samples = max(tensor.shape[0] for tensor in train_voltage_data)
 
@@ -392,7 +393,7 @@ def process_all_data(data_dirs, output_dir, target_cell_types, param_a, param_b,
     logger.info("Concatenating all conditions along first dimension...")
 
     # Process train data: concatenate all conditions -> [samples*conditions, 61, 10]
-    if train_condition_tensors:
+    if train_condition_tensors and not test_only:
         # Concatenate all condition tensors along dim 0
         train_combined = torch.cat(train_condition_tensors, dim=0)  # [samples*conditions, 61, 10]
 
@@ -455,6 +456,7 @@ def main():
     parser.add_argument('--delay-type', type=str, default='transition', choices=['cell', 'transition'],
                         help='Delay type: cell or transition (default: transition)')
     parser.add_argument('--train-only', action='store_true', help='Create only train dataset')
+    parser.add_argument('--test-only', action='store_true', help='Create only test dataset')
 
     args = parser.parse_args()
 
@@ -472,7 +474,8 @@ def main():
         param_b=args.param_b,
         param_c=args.param_c,
         delay_type=args.delay_type,
-        train_only=args.train_only
+        train_only=args.train_only,
+        test_only=args.test_only
     )
     
     if success:

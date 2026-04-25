@@ -15,7 +15,7 @@ import argparse
 from pathlib import Path
 
 # Data directory
-TSMC_DATA_DIR = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/tSMC_lib_files"
+TSMC_DATA_DIR = "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/TSMC_lib_files"
 
 # Dataset type configurations
 DATASET_CONFIGS = {
@@ -190,12 +190,14 @@ Dataset Types:
                        help='Delay type: cell or transition')
     parser.add_argument('--train-only', action='store_true',
                        help='Only create shared train dataset')
+    parser.add_argument('--test-only', action='store_true',
+                       help='Only create test datasets (skip train)')
     parser.add_argument('--yes', '-y', action='store_true',
                        help='Skip confirmation prompt')
 
     return parser.parse_args()
 
-def build_command(dataset_type, delay_type, train_only=False):
+def build_command(dataset_type, delay_type, train_only=False, test_only=False):
     """Build the command to execute"""
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                'build_and_split_dataset_tsmc.py')
@@ -203,7 +205,7 @@ def build_command(dataset_type, delay_type, train_only=False):
     config = DATASET_CONFIGS[dataset_type]
 
     # Output directory
-    output_dir = f"../dataset_all/temp_dataset_TSMC/{config['output_suffix']}"
+    output_dir = f"../../dataset_all/temp_dataset_TSMC/{config['output_suffix']}"
 
     # Test cell types
     test_cell_types = config['test_cell_types']
@@ -222,10 +224,12 @@ def build_command(dataset_type, delay_type, train_only=False):
 
     if train_only:
         cmd.append('--train-only')
+    if test_only:
+        cmd.append('--test-only')
 
     return cmd, output_dir
 
-def confirm_execution(dataset_type, delay_type, output_dir, folder_count, folders, train_only=False, auto_confirm=False):
+def confirm_execution(dataset_type, delay_type, output_dir, folder_count, folders, train_only=False, test_only=False, auto_confirm=False):
     """Show summary and confirm execution"""
     config = DATASET_CONFIGS[dataset_type]
 
@@ -240,7 +244,8 @@ def confirm_execution(dataset_type, delay_type, output_dir, folder_count, folder
 
     print(f"\nDelay Type: {delay_type}")
     print(f"Topology Type: {config['topology_type']}")
-    print(f"Mode: {'Train only' if train_only else 'Train + Test'}")
+    mode = 'Test only' if test_only else ('Train only' if train_only else 'Train + Test')
+    print(f"Mode: {mode}")
 
     print(f"\nMatching Folders: {folder_count} folders")
     if folder_count > 0 and folder_count <= 10:
@@ -314,17 +319,21 @@ def main_interactive():
     delay_type = select_delay_type()
     print(f"\nSelected delay type: {delay_type}")
 
-    # Step 4: Ask for train-only mode
+    # Step 4: Ask for processing mode
     print("\nProcessing mode:")
     print("-" * 80)
-    train_only_input = input("Train only mode? [y/N]: ").strip().lower()
-    train_only = train_only_input in ['y', 'yes']
+    print("  [0] Train + Test (default)")
+    print("  [1] Train only")
+    print("  [2] Test only")
+    mode_input = input("Select mode [0-2]: ").strip()
+    train_only = mode_input == '1'
+    test_only = mode_input == '2'
 
     # Step 5: Build command
-    cmd, output_dir = build_command(dataset_type, delay_type, train_only)
+    cmd, output_dir = build_command(dataset_type, delay_type, train_only, test_only)
 
     # Step 6: Confirm and execute
-    if confirm_execution(dataset_type, delay_type, output_dir, folder_count, folders, train_only, auto_confirm=False):
+    if confirm_execution(dataset_type, delay_type, output_dir, folder_count, folders, train_only, test_only, auto_confirm=False):
         return execute_command(cmd)
     else:
         print("\nExecution cancelled by user.")
@@ -338,10 +347,12 @@ def main_commandline(args):
     dataset_type = args.dataset_type if args.dataset_type else 'original_agnostic'
     delay_type = args.delay_type if args.delay_type else 'transition'
     train_only = args.train_only
+    test_only = args.test_only
 
     print(f"Dataset Type: {get_dataset_name(dataset_type)}")
     print(f"Delay Type: {delay_type}")
-    print(f"Mode: {'Train only' if train_only else 'Train + Test'}")
+    mode = 'Test only' if test_only else ('Train only' if train_only else 'Train + Test')
+    print(f"Mode: {mode}")
 
     # Count matching folders
     folder_count, folders = count_matching_folders(dataset_type)
@@ -353,11 +364,11 @@ def main_commandline(args):
     print(f"Found {folder_count} matching folders")
 
     # Build command
-    cmd, output_dir = build_command(dataset_type, delay_type, train_only)
+    cmd, output_dir = build_command(dataset_type, delay_type, train_only, test_only)
 
     # Confirm and execute
     auto_confirm = hasattr(args, 'yes') and args.yes
-    if confirm_execution(dataset_type, delay_type, output_dir, folder_count, folders, train_only, auto_confirm=auto_confirm):
+    if confirm_execution(dataset_type, delay_type, output_dir, folder_count, folders, train_only, test_only, auto_confirm=auto_confirm):
         return execute_command(cmd)
     else:
         print("\nExecution cancelled.")
