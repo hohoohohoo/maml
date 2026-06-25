@@ -1,0 +1,42 @@
+{
+  "experiment_name": "gat_maml_tsmc_process_sweep",
+  "description": "TSMC Process GAT MAML architecture sweep (11D node features: 7 base + 4 process params)",
+  "base_config": {
+    "data_type": "cell",
+    "graph_mode": "stage_aware",
+    "voltage_mode": "all_nodes",
+    "meta_lr": 0.0001,
+    "innerdiv": 10,
+    "total_iterations": 300000,
+    "chunk_size": 30000,
+    "K": 5,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1,
+    "gpu": 5,
+    "pooling": "mean",
+    "heads": 4,
+    "related_pin_only": true
+  },
+  "sweep_params": {
+    "conv_hidden_dim": [64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [256],
+    "num_fc_layers": [2]
+  },
+  "resume_config": {
+    "auto_resume": true,
+    "resume": null,
+    "additional_iterations": null
+  },
+  "_comments": {
+    "model_type": "GAT (Graph Attention Network) with multi-head attention",
+    "heads_note": "Number of attention heads. conv_hidden_dim should be divisible by heads for efficient computation",
+    "num_fc_layers_note": "GAT supports only 2 or 3 FC layers",
+    "pooling_options": "mean, max, add, output (output-node-only)",
+    "voltage_mode_options": "all_nodes (voltage to all nodes) or vdd_only (voltage only on VDD node)",
+    "cache_path_note": "Override topology cache path. Use gatectrl cache for gate control edges",
+    "output_node_idx_note": "output_node_idx is now dynamically determined from topology cache (fallback default: 2)",
+    "related_pin_only_note": "Set true to use related_pin_only dataset. Input slew assigned only to triggering input port. Adds _relpin suffix to paths.",
+    "resume_note": "Set auto_resume=true to automatically find and continue from latest checkpoint. Set resume to a specific .pth file path. additional_iterations overrides total_iterations when resuming."
+  }
+}

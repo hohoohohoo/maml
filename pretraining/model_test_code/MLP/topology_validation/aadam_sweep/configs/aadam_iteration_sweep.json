@@ -1,0 +1,17 @@
+{
+  "experiment_name": "aadam_iteration_sweep",
+  "description": "AADAM baseline sweep with different iterations",
+  "base_config": {
+    "config": 1,
+    "num_test_samples": 1000000,
+    "save_results": true,
+    "total_points": 61,
+    "gpu_id": "5",
+    "model_type": "aadam"
+  },
+  "sweep_params": {
+    "mode": ["interpolation", "extrapolation"],
+    "data_type": ["cell"],
+    "num_iterations": [1200000,600000,900000]
+  }
+}

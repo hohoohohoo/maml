@@ -696,7 +696,11 @@ class TSMCStageAwareExtractor:
         Classify cell with multi-stage support (for XOR, XNOR, complex cells).
 
         Iteratively finds stages by tracing back from output until all gate nodes
-        are external inputs.
+        are external inputs.  After the main traversal, a loop-closing pass is
+        always run: for any gate that is already a visited target net
+        (cross-coupled storage feedback), one extra pull-up + pull-down stage is
+        added so the latch feedback survives as an explicit cycle in the graph.
+        For purely combinational cells this is a no-op (no visited gates).
 
         Args:
             cell_name: Name of cell
@@ -831,6 +835,68 @@ class TSMCStageAwareExtractor:
             else:
                 current_mos_type = 'pmos'
                 current_power = 'VDD'
+
+        # === Loop-closing pass (always-on) ===
+        # For sequential cells with cross-coupled storage, the main backward
+        # traversal terminates when all gates are external_or_visited.  The
+        # "visited" gates are precisely the storage nodes that close a feedback
+        # loop.  We add one additional pull-up + pull-down stage per such net so
+        # the resulting graph contains the latch feedback as an explicit cycle
+        # (instead of cutting it).  No-op for combinational cells.
+        all_visited_targets = set(visited_target_nodes)
+        for st in stages_reversed:
+            all_visited_targets.update(st.target_nodes)
+
+        loop_closing_nets = set()
+        for st in stages_reversed:
+            for g in st.gate_nodes:
+                if g not in external_nets and g in all_visited_targets:
+                    loop_closing_nets.add(g)
+
+        if loop_closing_nets:
+            print(f"\n--- Loop-closing pass — closing {len(loop_closing_nets)} feedback net(s): "
+                  f"{sorted(loop_closing_nets)} ---")
+        used_trans = set()
+        for st in stages_reversed:
+            used_trans.update(st.transistors)
+
+        for closing_net in sorted(loop_closing_nets):
+            for cm_type, cm_power in [('pmos', 'VDD'), ('nmos', 'VSS')]:
+                cand = self._find_stage_transistors(
+                    cell, cm_power, {closing_net}, cm_type)
+                cand = cand - used_trans
+                if not cand:
+                    continue
+                if cm_type == 'pmos':
+                    c_paths_raw = self.trace_pmos_paths_tsmc(
+                        cell, cm_power, {closing_net})
+                else:
+                    c_paths_raw = self.trace_nmos_paths_tsmc(
+                        cell, cm_power, {closing_net})
+                c_paths, c_trans_list = self._paths_to_edges_tsmc(
+                    c_paths_raw, f"LoopClose-{cm_type.upper()}->{closing_net}")
+                if not c_trans_list:
+                    continue
+                c_gates = set()
+                c_trans_set = set(c_trans_list)
+                for trans in cell.transistors:
+                    if trans.name in c_trans_set:
+                        resolved = self._resolve_node_connection(cell, trans.gate)
+                        if resolved and resolved not in power_nets:
+                            c_gates.add(resolved)
+                closing_stage = StageData(
+                    stage_num=0,
+                    mos_type=cm_type,
+                    power_node=cm_power,
+                    target_nodes=[closing_net],
+                    paths=c_paths,
+                    transistors=c_trans_list,
+                    gate_nodes=list(c_gates),
+                )
+                stages_reversed.append(closing_stage)
+                used_trans.update(c_trans_list)
+                print(f"    + closing-stage {cm_type.upper()} ({cm_power} -> {closing_net}): "
+                      f"transistors={c_trans_list}, gates={list(c_gates)}")
 
         # Reverse stages so stage 1 is closest to input
         stages_reversed.reverse()

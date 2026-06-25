@@ -193,6 +193,42 @@ def parse_mlp_filename(filename):
             'filename': basename
         }
 
+    # Pattern for FAIRINIT / SGDADAMLR baselines (no PDK prefix in filename;
+    # the leading token IS the baseline-method tag, and PDK is recovered from
+    # the cell-name suffix: `*BWP30P140` → TSMC, otherwise ASAP7).
+    fairinit_sgdadamlr_pattern = (
+        r'(FAIRINIT|SGDADAMLR)_'
+        r'(intra_topology|topology_agnostic|intra|agnostic)_'
+        r'(\w+)_(cell|transition)_(extrapolation|interpolation)_'
+        r'(mlp)_(\d+)(_adam)?_(pred|act)\.npy'
+    )
+    match = re.match(fairinit_sgdadamlr_pattern, basename)
+
+    if match:
+        baseline_method = match.group(1)               # FAIRINIT or SGDADAMLR
+        topology = match.group(2)
+        if topology == 'agnostic':
+            topology = 'topology_agnostic'
+        elif topology == 'intra':
+            topology = 'intra_topology'
+        cell = match.group(3)
+        pdk = 'TSMC' if cell.endswith('BWP30P140') else 'ASAP7'
+        adapt_method = 'adam' if match.group(8) == '_adam' else 'selective_adam'
+
+        return {
+            'prefix': pdk,
+            'topology': topology,
+            'cell': cell,
+            'data_type': match.group(4),
+            'mode': match.group(5),
+            'model_type': f'MLP_{baseline_method}',    # MLP_FAIRINIT / MLP_SGDADAMLR
+            'baseline_method': baseline_method,
+            'iterations': int(match.group(7)),
+            'adapt_method': adapt_method,
+            'file_type': match.group(9),
+            'filename': basename
+        }
+
     # Pattern for baseline MLP
     baseline_pattern = r'(\w+)_(intra_topology|topology_agnostic|intra|agnostic)_(\w+)_(cell|transition)_(extrapolation|interpolation)_(mlp)_(\d+)(_adam)?_(pred|act)\.npy'
     match = re.match(baseline_pattern, basename)
@@ -649,6 +685,12 @@ Examples:
     parser.add_argument('--mlp_adapt_method', type=str, default='selective_adam',
                        choices=['selective_adam', 'adam'],
                        help='MLP adaptation method (default: selective_adam)')
+    parser.add_argument('--mlp_baseline_model_type', type=str, default=None,
+                       choices=['AADAM', 'MLP', 'MLP_FAIRINIT', 'MLP_SGDADAMLR'],
+                       help='Restrict MLP baseline to a single training family: '
+                            'AADAM (256), MLP w/o MAML (40), MLP_FAIRINIT (fair-init pretrain), '
+                            'or MLP_SGDADAMLR (SGD-then-Adam pretrain). '
+                            'Default None mixes everything in the baseline dir.')
     parser.add_argument('--graph_mode', type=str, default='stage_aware',
                        choices=['stage_aware', 'full_graph'],
                        help='Filter GCN results by graph mode (default: stage_aware)')
@@ -746,7 +788,10 @@ Examples:
         else:
             mlp_maml_df = maml_data.copy() if len(maml_data) > 0 else None
 
-        mlp_baseline_data = mlp_df[mlp_df['model_type'] == 'MLP']
+        # Keep all baseline-side model_types (MLP, MLP_FAIRINIT, MLP_SGDADAMLR).
+        # Downstream filter at line ~872 narrows further via --mlp_baseline_model_type.
+        baseline_model_types = ['MLP', 'MLP_FAIRINIT', 'MLP_SGDADAMLR']
+        mlp_baseline_data = mlp_df[mlp_df['model_type'].isin(baseline_model_types)]
         if len(mlp_baseline_data) > 0:
             mlp_baseline_data = mlp_baseline_data[mlp_baseline_data['iterations'] == args.mlp_baseline_iter]
             if 'adapt_method' in mlp_baseline_data.columns:
@@ -826,6 +871,9 @@ Examples:
                         filtered = filtered[filtered['mode'] == mode_filter]
                     if exp_filter and 'topology' in mlp_baseline_df.columns:
                         filtered = filtered[filtered['topology'] == exp_filter]
+                    # NEW: restrict to one model_type when requested
+                    if args.mlp_baseline_model_type and 'model_type' in mlp_baseline_df.columns:
+                        filtered = filtered[filtered['model_type'] == args.mlp_baseline_model_type]
                     if len(filtered) > 0:
                         if 'MLP' not in data[key]:
                             data[key]['MLP'] = {}

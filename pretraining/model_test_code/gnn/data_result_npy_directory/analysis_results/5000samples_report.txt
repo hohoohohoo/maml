@@ -1,0 +1,43 @@
+
+====================================================================================================
+SUMMARY REPORT: 4 Method Combinations x 12 Conditions
+====================================================================================================
+
+[1] Average MAPE by Method:
+------------------------------------------------------------
+  baseline   + full_graph  :   2.5662% (+/-0.4620%) [4/12 conditions]
+  maml       + full_graph  :   3.4125% (+/-2.5349%) [4/12 conditions]
+  baseline   + stage_aware :      nan% (+/-nan%) [0/12 conditions]
+  maml       + stage_aware :   0.8184% (+/-nan%) [1/12 conditions]
+
+[2] MAML Improvement over Baseline (by Graph Mode):
+------------------------------------------------------------
+  full_graph     :   -37.21% avg improvement (2/4 conditions MAML better)
+  stage_aware    :     +nan% avg improvement (0/0 conditions MAML better)
+
+[3] Full Graph vs Stage Aware Comparison:
+------------------------------------------------------------
+  BASELINE  : Full Graph=2.5662%, Stage Aware=nan% (diff=+nan%)
+  MAML      : Full Graph=3.4125%, Stage Aware=0.8184% (diff=+2.5941%)
+
+[4] Best Method per Condition (lowest MAPE):
+------------------------------------------------------------
+  LVT_FF      : NO DATA
+  LVT_TT      : NO DATA
+  LVT_SS      : NO DATA
+  LVT_FS      : NO DATA
+  RVT_FF      : maml_stage_aware          (0.8184%)
+  RVT_TT      : maml_full_graph           (1.7209%)
+  RVT_SS      : baseline_full_graph       (3.2500%)
+  RVT_FS      : NO DATA
+  SLVT_FF     : NO DATA
+  SLVT_TT     : baseline_full_graph       (2.2870%)
+  SLVT_SS     : NO DATA
+  SLVT_FS     : NO DATA
+
+[5] Method Win Count (Best MAPE across conditions):
+------------------------------------------------------------
+  baseline_full_graph      : 2 wins
+  maml_full_graph          : 1 wins
+  maml_stage_aware         : 1 wins
+  baseline_stage_aware     : 0 wins

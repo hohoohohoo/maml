@@ -1,0 +1,128 @@
+IEEE/ACM ICCAD 2026 Paper #642 Reviews and Comments
+===========================================================================
+Paper #642 TAMEL: Topology-Aware Meta-Learning for Few-shot Delay
+Re-characterization Across Unseen Cell Topologies
+
+
+Review #642A
+===========================================================================
+
+Paper summary (3-4 sentences)
+-----------------------------
+TAMEL is a topology-aware meta-learning framework based on MAML for rapid, few-shot delay recharacterization across unseen PVT corners and cell topologies. By incorporating transistor-level features (Tox, DIBL) and current-path-based topology representations, TAMEL learns a generalized initialization that avoids cell-specific identities, enabling extension to unseen cell designs. Validated across MLP and GCN backbones, it accurately characterizes entirely new cell topologies with few support points, achieving a cross-topology NRMSE of 0.43% while delivering a 500x runtime reduction compared to exhaustive SPICE simulations.
+
+Strengths
+---------
+1. True Generalization to Unseen Topologies: Bypasses the limitation of traditional cell-level ML models that can only predict parameters for gates seen during training.
+2. Physically-Grounded Feature Decoupling: The paper provides excellent physical insight by refusing to collapse process variations into a single lumped $V_{th}$ parameter. By explicitly decoupling $V_{th}$ into distinct microscopic drivers (DIBL, SCE, and $T_{ox}$), the framework mathematically isolates voltage-dependent effects from long-term aging/dielectric degradation. This physically rigorous feature engineering is exactly why the model generalizes so well.
+3. Drastic Simulation Reduction: Achieving a 500x speedup over exhaustive SPICE characterization directly addresses a massive bottleneck in library generation.
+
+Weaknesses
+----------
+1. High-Dimensional Curse for Complex/Sequential Cells: The current-path graph construction is intuitive for simple combinational gates (e.g., inverters, NANDs). However, applying this static path representation to complex multi-stage cells or state-retaining sequential elements (like the D-FFs mentioned in Section 4.1) is highly problematic. Sequential cells contain internal cross-coupled feedback loops and require metastability bisection searches for Setup/Hold time characterization, which cannot be accurately modeled by a simple feed-forward current-path graph without causing a dimensional explosion or severe physical abstraction errors.
+2. Timing Pessimism/Safety Bound: The 0.43% NRMSE represents a mean metric. The paper does not guarantee that the few-shot predictions are bounded pessimistically; any underestimation of delay will corrupt downstream sign-off STA.
+3. Meta-Training Overhead: While the few-shot execution (inference) is extremely fast, the initial meta-training phase across diverse topologies requires a massive, pre-computed SPICE library, shifting the computational burden to the offline phase.
+
+Comments for authors
+--------------------
+TAMEL represents a solid step forward in applying meta-learning to standard-cell characterization. Avoiding cell-identity binding via current-path representation, and physically decoupling process variations, is an elegant choice. However, your evaluation on benchmarks like s5378 and vga_lcd (which are rich in sequential logic) leaves a critical blind spot regarding D-Flip-Flops. A simple current-path graph cannot easily model the cross-coupled loops and metastability bisection searches required for DFF Setup/Hold constraints. You must clarify if DFF timing constraints were actually predicted by TAMEL or simply borrowed from the golden library. Furthermore, address the pessimistic boundary conditions for timing safety.
+
+Rebuttal questions for authors
+------------------------------
+1. [Sequential Cell Modeling] In Section 4.1, you mentioned including D-FF and sequential FFs in the unseen-topology test set. How exactly does your static current-path graph represent the internal state-retention feedback loops of a D-Flip-Flop? Furthermore, did TAMEL predict the *Setup and Hold time constraints* for these sequential cells in your benchmark STA runs? If so, how does your model capture the non-linear metastability bisection search required for these constraints without exploding the graph dimension? Or did you employ a 'mixed library' approach where DFF metrics were simply retained from the golden SPICE library?
+2. [Pessimism Control] To prevent silicon timing failures, can the TAMEL loss function be adjusted to enforce a strictly pessimistic boundary (predicting slightly higher delay) during few-shot adaptation?
+
+
+
+Review #642B
+===========================================================================
+
+Paper summary (3-4 sentences)
+-----------------------------
+The authors present a topology-aware meta-learning framework for rapid, few-shot delay recharacterization. By incorporating transistor-level features and current-path-based topology representations, TAMEL learns a generalized initialization that avoids cell-specific identities, enabling seamless extension to unseen cell designs. Experimental results show that with few support points under unseen PVT conditions, TAMEL accurately characterizes entirely new cell topologies and unseen drive-strength variants, achieving 0.43% NRMSE on cross-topology generalization, a 18.0 times reduction over conventional GCN baselines.
+
+Strengths
+---------
+1. The proposed TAMEL meta-learning framework can be extended to various models;
+
+2. The existing cell framework within the training set can be adaptive to unknown cell topologies,
+
+3. Use transistor-level parameters (Tox, DIBL, SCE) as independent input features, rather than the single Vth parameter used in the traditional methods.
+
+Weaknesses
+----------
+1. As shown in Sec. 3.3, the input parrameters of the models being compared are not consistent;
+
+2. The comparison of NRMSE is not intuitive and requires meaningful metrics for effective comparison; 
+
+3. The novelty of the manuscript is limited as GCN and MLP are commonly models for timing characterization while the meta-learning method is used directly for the problem without new technical insight during meta-learning model application;
+
+4. The selected dataset is too small; the method's effectiveness needs to be validated on a larger dataset;
+
+5. As shown in Table 5, only the erros under TT conditions are displayed; results for other scenarios should be presented;
+
+6. As shown in Fig. 6, the training and testing time is quite long for machine learning methods on ad dataset of this small size.
+
+Comments for authors
+--------------------
+The authors propose a universal meta-learning framework that can accommodate varisous models. However, The novelty of the manuscript is limited as GCN and MLP are commonly models for timing characterization while the meta-learning method is used directly for the problem without new technical insight during meta-learning model application, and the experimental validation requires more realistic evaluation metrics, larger datasets, and additional model performance benchmarks.
+
+Rebuttal questions for authors
+------------------------------
+1. As demonstrated in experiment 4, the accuracy of teh MLP and GCN methods with MAML added is remarkbably similar. The authors need to explain the reasons for this phenomenon, clarify whether MAML is responsible for this variation, and elucidate under what conditions MAML optimizes which models most effectively.
+
+2. It is advisable to include intuitive metrics such as WNS, TNS and MAE to demonstrate the method's practical effectiveness.
+
+
+
+Review #642C
+===========================================================================
+
+Paper summary (3-4 sentences)
+-----------------------------
+This work introduces TAMEL, a topology-aware meta-learning framework built upon MAML for few-shot delay re-characterization across unseen standard cell topologies and PVT corners. It leverages transistor-level physical parameters and current-path based topology representation to learn generalizable model initialization independent of specific cell identities. Evaluated with MLP and GCN backbones, the method achieves a cross-topology NRMSE of 0.43% and delivers up to 500× speedup against full SPICE simulation. The paper receives mixed ratings ranging from Weak Reject to Borderline. It exhibits good generalization capability and physical interpretability, yet faces issues in modeling complex cells, experimental design, limited technical novelty and insufficient performance validation.
+
+Strengths
+---------
+The framework realizes genuine generalization to completely unseen cell topologies, breaking the constraint of conventional cell-level machine learning approaches that only work on trained gate types. The feature engineering is physically rigorous by decoupling threshold voltage into microscopic transistor parameters including Tox, DIBL and SCE, which clearly separates voltage-related effects from aging and degradation factors and lays a solid foundation for strong generalization.
+
+Weaknesses
+----------
+The current-path graph representation is only suitable for simple combinational cells and struggles with complex sequential cells such as D flip-flops. It cannot properly model internal feedback loops or capture metastability related setup and hold timing constraints, which may lead to dimensional explosion and physical modeling errors.
+
+
+
+Review #642D
+===========================================================================
+
+Paper summary (3-4 sentences)
+-----------------------------
+This paper formulates delay characterization as a few-shot adaptation problem and proposes a MAML-based framework that learns a shared initialization for fast adaptation to unseen cell topologies. To improve transferability, it introduces current-path-aware feature engineering, where samples are built from timing-arc-specific current paths and node features separately encode transistor-level effects such as oxide thickness T_{ox}, DIBL, and SCE. The method further applies a dual-stage selective adaptation strategy: it first normalizes the pretrained delay curve using scale and offset alignment, then performs Adam-based refinement only when additional correction is needed. Overall, the approach aims to reduce characterization run time while maintaining accuracy across diverse standard-cell structures.
+
+Strengths
+---------
+1.	MAML fits the unseen-topology setting problem very well.
+2.	Current-path graph is intuitive and effective.
+3.	Ablation studies make the contribution more convincing than only reporting final accuracy.
+
+Weaknesses
+----------
+1.	The paper uses timing-arc-specific current-path graphs, but the exact extraction algorithm from the transistor netlist is unclear.
+2.	Compare only with one previous work.
+
+Comments for authors
+--------------------
+The paper addresses an important and practical problem in delay re-characterization, especially for unseen cell topologies where collecting sufficient characterization data is expensive. Framing the task as a few-shot adaptation problem is well motivated, and the use of MAML is a natural fit because the model is expected to quickly adapt from limited samples. The proposed current-path graph representation is also intuitive, since timing delay is strongly related to the conducting transistor paths for each timing arc. In addition, explicitly separating transistor-level effects such as T_{ox}, DIBL, and SCE makes the feature design more physically meaningful than using a single aggregated process/device feature.
+
+One strength of the paper is that the contribution is not limited to reporting final accuracy. The ablation studies help clarify the individual impact of MAML, current-path-aware graph construction, device-level features, and selective Adam adaptation. This makes the overall methodology more convincing and helps readers understand which components are most important. The selective Adam refinement is also a practical design choice, since it can reduce unnecessary online adaptation cost when normalization alone is sufficient.
+
+However, the paper would benefit from a clearer explanation of how the timing-arc-specific current-path graphs are extracted from the transistor netlist. Since this graph construction is a central part of the proposed method, the exact extraction rules, corner cases, and whether the process is fully automatic should be described in more detail. For example, it would be useful to clarify how parallel/stacked transistors, reconvergent paths, internal nodes, and different input conditions are handled. A pseudocode description or an illustrative example starting from a transistor-level netlist would make the method easier to reproduce.
+
+Another limitation is that the experimental comparison is relatively narrow. The paper compares against only one previous work, which makes it difficult to fully assess the advantage of the proposed method over other possible baselines. I suggest adding comparisons with more general transfer learning or fine-tuning baselines, such as training from scratch with few samples, pretrained GCN fine-tuning without MAML, feature-based regression models, or Adam-only adaptation without meta-learning. These additional baselines would better isolate the benefit of the proposed MAML-based formulation.
+
+Overall, the paper presents a promising and technically reasonable approach for few-shot delay re-characterization. The motivation, feature design, and adaptation strategy are strong, and the ablation studies improve the credibility of the results. The main improvements I would recommend are to provide a more detailed and reproducible description of the current-path graph extraction procedure and to broaden the experimental comparison against additional baselines.
+
+Rebuttal questions for authors
+------------------------------
+1.	The proposed method relies on timing-arc-specific current-path graphs. Could the authors clarify the exact algorithm used to extract these current paths from the transistor-level netlist? In particular, how are stacked/parallel transistors, reconvergent paths, internal nodes, and input-state-dependent conducting paths handled?
+2.	The experimental comparison includes only one previous work. Could the authors explain why other baselines and previous works were not included?

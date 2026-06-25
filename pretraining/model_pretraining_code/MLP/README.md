@@ -314,8 +314,8 @@ dataset_all/temp_dataset_{PDK}/{topology}_data/
 2. **데이터셋 필요**: 학습 전 MLP 데이터셋 생성 필요
    ```bash
    # data_processing/MLP/ 에서 실행
-   python run_asap7_topology_preprocessing.py
-   python run_tsmc_topology_preprocessing.py
+   python asap7/run_asap7_topology_preprocessing.py
+   python tsmc/run_tsmc_topology_preprocessing.py
    ```
 
 3. **Sweep 조합**: sweep_params의 모든 조합이 순차적으로 학습됨

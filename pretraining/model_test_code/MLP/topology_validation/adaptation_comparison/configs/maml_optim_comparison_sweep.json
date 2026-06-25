@@ -1,0 +1,24 @@
+{
+  "experiment_name": "maml_optim_comparison_sweep",
+  "description": "MAML optimization method comparison: Grad+Move, SGD, Adam, Selective Adam",
+  "base_config": {
+    "inner": 1,
+    "innerdiv": 100,
+    "meta": 32,
+    "num_iterations": 300000,
+    "gpu_id": "7",
+    "num_test_samples": 1000000,
+    "save_results": true,
+    "indices": null,
+    "total_points": 61,
+    "mode":"extrapolation",
+    "measure_time": false
+  },
+  "sweep_params": {
+    "config": [3,2,1,0],
+    "data_type": ["cell", "transition"]
+  },
+  "_comments": {
+    "measure_time": "Set to true to measure timing on CPU for consistent measurement"
+  }
+}

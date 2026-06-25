@@ -106,29 +106,37 @@ def train_mlp_model(config_id, num_iterations=100000, data_type='cell',
     )
 
     # Determine naming convention to match validation script expectations
-    # Format: pretrained_{tech}_{topology_type}_{data_type}_{model_type}_{num_iterations}.pth
+    # Format: pretrained_{tech}{model_path_suffix}_{topology_name}_{data_type}_{model_type}_{num_iterations}.pth
+    #
+    # Configs 6/7 carry 'model_path_suffix' = '_combined'. That suffix
+    # is appended right after the tech token so the resulting filename is
+    # physically distinct from the legacy config-2/3 checkpoints, which lets
+    # us run before/after comparisons without overwriting anything. Configs
+    # 0..3 (no suffix in the dataset_config) keep their original filenames.
     if topology_type == 'intra':
         topology_name = 'intra_topology'
     else:  # agnostic
         topology_name = 'topology_agnostic'
 
+    model_path_suffix = dataset_config.get('model_path_suffix', '')
+
     # Checkpoint directory
-    checkpoint_dir = f'../../pretrained_models/MLP_pretrained_model/training_loss_checkpoints_{tech}_{topology_name}_{data_type}_{model_type}_{num_iterations}'
+    checkpoint_dir = f'../../../pretrained_models/MLP_pretrained_model/training_loss_checkpoints_FAIRINIT_{tech}{model_path_suffix}_{topology_name}_{data_type}_{model_type}_{num_iterations}'
     mlp_train_loss = mlp.loop(checkpoint_dir=checkpoint_dir)
 
     # Save model using utility function
     # Naming convention matches test_dataset_config.py mlp_model_path patterns
-    model_save_path = f'../../pretrained_models/MLP_pretrained_model/training_loss_pretrained_{tech}_{topology_name}_{data_type}_{model_type}_{num_iterations}.pth'
+    model_save_path = f'../../../pretrained_models/MLP_pretrained_model/training_loss_pretrained_FAIRINIT_{tech}{model_path_suffix}_{topology_name}_{data_type}_{model_type}_{num_iterations}.pth'
     save_model(mlp.model, model_save_path, train_loss=mlp_train_loss)
 
     print(f"MLP - Train Loss: {mlp_train_loss:.6f}")
 
     # Save loss log if enabled
     if loss_logging_config and loss_logging_config.get('enabled', False) and mlp.iteration_loss_log:
-        loss_log_dir = loss_logging_config.get('save_dir') or f'../../pretrained_models/loss_logs_mlp'
+        loss_log_dir = loss_logging_config.get('save_dir') or f'../../../pretrained_models/loss_logs_mlp'
         import os
         os.makedirs(loss_log_dir, exist_ok=True)
-        loss_log_filename = f"loss_log_mlp_{tech}_{topology_name}_{data_type}_{model_type}_{num_iterations}.json"
+        loss_log_filename = f"loss_log_mlp_{tech}{model_path_suffix}_{topology_name}_{data_type}_{model_type}_{num_iterations}.json"
         loss_log_path = os.path.join(loss_log_dir, loss_log_filename)
         mlp.save_loss_log(loss_log_path)
 
@@ -144,7 +152,7 @@ def main():
     """Main function for unified MLP training"""
     # Parse command line arguments
     parser = argparse.ArgumentParser(description='MLP Unified Pretraining - Multiple Dataset Configurations')
-    parser.add_argument('--dataset_config', type=int, required=True, choices=[0, 1, 2, 3],
+    parser.add_argument('--dataset_config', type=int, required=True, choices=[0, 1, 2, 3, 6, 7],
                         help='Dataset configuration: 0=ASAP7 intra, 1=ASAP7 agnostic, 2=TSMC intra, 3=TSMC agnostic')
     parser.add_argument('--gpu_id', type=str, default='0',
                         help='GPU device ID (default: 0)')

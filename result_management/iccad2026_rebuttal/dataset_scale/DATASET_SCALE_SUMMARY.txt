@@ -1,0 +1,88 @@
+========================================================================
+DATASET SCALE SUMMARY (Reviewer concern: dataset too small)
+========================================================================
+
+--- TSMC 28 nm commercial PDK ---
+  Total cells in lib: 75 (72 combinational + 3 sequential)
+  Distinct cell families: 31
+  Family breakdown (variants per family):
+    AN2      x3  [AND2]
+    AN3      x2  [AND3]
+    AN4      x2  [AND4]
+    AO21     x2  [AOI compound (AO21)]
+    AO211    x2  [AOI compound (AO211)]
+    BUFF     x4  [Buffer]
+    DFCNQ    x1  [Sequential: D-FF (async clear)]
+    FA1      x1  [Full adder]
+    HA1      x1  [Half adder]
+    IAO21    x2  [Inverted AOI (IAO21)]
+    INV      x4  [Inverter]
+    IOA21    x2  [Inverted OAI (IOA21)]
+    ND2      x4  [NAND2]
+    ND3      x4  [NAND3]
+    ND4      x3  [NAND4]
+    NR2      x4  [NOR2]
+    NR3      x4  [NOR3]
+    NR4      x3  [NOR4]
+    OA21     x2  [OAI compound (OA21)]
+    OA211    x2  [OAI compound (OA211)]
+    OR2      x3  [OR2]
+    OR3      x2  [OR3]
+    OR4      x2  [OR4]
+    SDFCSNQ  x1  [Sequential: Scan D-FF (async clear+set)]
+    SDFSNQ   x1  [Sequential: Scan D-FF (async set)]
+    XNR2     x3  [XNOR2]
+    XNR3     x2  [XNOR3]
+    XNR4     x2  [XNOR4]
+    XOR2     x3  [XOR2]
+    XOR3     x2  [XOR3]
+    XOR4     x2  [XOR4]
+
+--- ASAP7 7 nm predictive PDK (RVT flavor) ---
+  Total cells in RVT lib: 208
+  Distinct cell families: 95
+  (Other V_T flavors L, SL, SRAM contain identical 208 cells each)
+  Category breakdown:
+    AOI compound                               21 cells
+    Inverter / Clock inverter                  21 cells
+    OAI compound                               19 cells
+    AO compound                                19 cells
+    OA compound                                13 cells
+    NAND                                       12 cells
+    Buffer                                     12 cells
+    NOR                                        11 cells
+    AND                                        10 cells
+    OR                                         10 cells
+    Sequential: Integrated clock gating        10 cells
+    Sequential: D-FF                           8 cells
+    Sequential: Scan D-FF                      8 cells
+    Sequential: Latch                          6 cells
+    Filler: decap                              6 cells
+    Complex compound                           4 cells
+    Header buffer                              4 cells
+    XNOR                                       3 cells
+    XOR                                        3 cells
+    Majority                                   3 cells
+    Filler: tie cell                           2 cells
+    Full adder                                 1 cells
+    Half adder                                 1 cells
+    Sequential: D-FF (async set/reset)         1 cells
+
+--- Test-set scale (held-out cells under topology_agnostic / intra_topology) ---
+  Each task = one voltage-to-delay curve at 61 V_dd points
+  (verified from rebuttal_metrics_per_cell.csv groupby)
+
+  [GCN_MAML buckets]
+    ASAP7 intra_topology     cell       :   4 cells,   8,000 tasks,   0.5 M (V,delay) samples
+    ASAP7 intra_topology     transition :   4 cells, 230,999 tasks,  14.1 M (V,delay) samples
+    ASAP7 topology_agnostic  cell       :   7 cells, 231,513 tasks,  14.1 M (V,delay) samples
+    ASAP7 topology_agnostic  transition :   7 cells, 606,497 tasks,  37.0 M (V,delay) samples
+    TSMC  intra_topology     cell       :   6 cells, 186,200 tasks,  11.4 M (V,delay) samples
+    TSMC  intra_topology     transition :   6 cells, 186,042 tasks,  11.3 M (V,delay) samples
+    TSMC  topology_agnostic  cell       :  16 cells, 493,920 tasks,  30.1 M (V,delay) samples
+    TSMC  topology_agnostic  transition :  16 cells, 493,788 tasks,  30.1 M (V,delay) samples
+
+  HEADLINE (GCN_MAML evaluation buckets summed):
+    Total (cell × bucket) evaluations : 66
+    Total tasks                       : 2,436,959
+    Total (V,delay) sample points     : 148.7 M

@@ -172,10 +172,14 @@ def transform_sample(sample, cap, cell_types, delay_types, size_types, port_nums
     for i, (input_array, output_value) in enumerate(zip(input_arrays, flat_values)):
         sample_dict = {
             'input': input_array,
-            'output': output_value  # Single output value, not a list
+            'output': output_value,  # Single output value, not a list
+            # Preserve cell name for downstream per-cell grouping in the
+            # patched builder. Existing callers that only pull 'input' and
+            # 'output' are unaffected by this extra key.
+            'cell': sample.get('cell', ''),
         }
         transformed_samples.append(sample_dict)
-    
+
     return transformed_samples
 
 def transform_all_samples(flatten, cap, lib_prefix="", abc_params=None):

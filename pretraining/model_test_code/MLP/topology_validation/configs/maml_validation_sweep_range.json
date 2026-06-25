@@ -1,0 +1,16 @@
+{
+  "experiment_name": "maml_validation_sweep_range",
+  "description": "MAML validation with range-based parameter sweep",
+  "base_config": {
+    "config": "intra_topology",
+    "mode": "extrapolation",
+    "num_iterations": 300000,
+    "num_test_samples": 1000000,
+    "save_results": true,
+    "total_points": 61
+  },
+  "sweep_params": {
+    "inner": {"min": 1, "max": 10, "step": 3},
+    "innerdiv": {"min": 50, "max": 200, "step": 50}
+  }
+}

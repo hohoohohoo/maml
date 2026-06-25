@@ -927,7 +927,7 @@ def train_single_config(args):
     print("\nCreating dataset (mmap loading)...")
     data_load_start = time.time()
 
-    # Construct train file path (order must match build_gnn_dataset_process_cached_tsmc.py)
+    # Construct train file path (order must match tsmc/build_gnn_dataset_process_cached_tsmc.py)
     # Order: topology_suffix → voltage_suffix → temp_suffix → slew_suffix
     voltage_suffix = f"_{voltage_mode}" if voltage_mode != 'all_nodes' else ""
     norm_suffix = "_minmax" if normalization == 'minmax' else ""

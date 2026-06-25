@@ -1,0 +1,35 @@
+{
+  "experiment_name": "gnn_validation_tsmc_sweep",
+  "description": "GNN validation sweep for TSMC dataset across corner-temperature combinations and architectures",
+  "base_config": {
+    "model_type": "maml",
+    "data_type": "cell",
+    "graph_mode": "full_graph",
+    "mode": "interpolation",
+    "total_points": 61,
+    "num_test_samples": 10000,
+    "num_iterations": 30000,
+    "save_results": true,
+    "filter_continuous": false,
+    "continuity_threshold": 0.18,
+    "gpu": 1,
+    "pooling": "output"
+  },
+  "sweep_params": {
+    "corner": ["FF"],
+    "temperature": [0],
+    "conv_hidden_dim": [64],
+    "num_conv_layers": [3],
+    "fc_hidden_dim": [256,512],
+    "num_fc_layers": [2]
+  },
+  "maml_config": {
+    "innerdiv": 10,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1
+  },
+  "_comments": {
+    "pooling_options": "mean, max, add, output (output-node-only)",
+    "output_node_idx_note": "output_node_idx is dynamically determined from topology cache (fallback default: 2)"
+  }
+}

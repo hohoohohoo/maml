@@ -1,0 +1,58 @@
+==============================================================================
+TRAINING-SET PER-CELL TASK COUNTS — both PDKs
+==============================================================================
+
+--- TSMC  train cell_delay      ---
+  Unique training cells           : 44
+  Total training tasks            :        735,000
+  mean tasks / cell               :       16,704.5
+  median tasks / cell             :          8,820
+  range                           : 2,940 – 94,080
+  train corners                   : ['FF', 'FS', 'TT', 'SF', 'SS'] (5 corners)
+  train temperatures              : [-25, 12.5, 37.5, 62.5, 87.5, 125] (6 temps)
+  num_conditions                  :             30
+  V_dd sweep length               :             61 points/task
+  Total (V, delay) training pts   :       44.84 M
+  Held-out (excluded) cells       : 6 cells (['AN4D0', 'ND3D0', 'NR3D1', 'OR4D0', 'XNR3D1', 'XOR3D1'])
+
+--- TSMC  train transition      ---
+  Unique training cells           : 44
+  Total training tasks            :        735,000
+  mean tasks / cell               :       16,704.5
+  median tasks / cell             :          8,820
+  range                           : 2,940 – 94,080
+  train corners                   : ['FF', 'FS', 'TT', 'SF', 'SS'] (5 corners)
+  train temperatures              : [-25, 12.5, 37.5, 62.5, 87.5, 125] (6 temps)
+  num_conditions                  :             30
+  V_dd sweep length               :             61 points/task
+  Total (V, delay) training pts   :       44.84 M
+  Held-out (excluded) cells       : 6 cells (['AN4D0', 'ND3D0', 'NR3D1', 'OR4D0', 'XNR3D1', 'XOR3D1'])
+
+--- ASAP7 train cell_delay (full) ---
+  Unique training cells           : 76
+  Total training tasks            :      6,209,280
+  mean tasks / cell               :       81,701.1
+  median tasks / cell             :         75,264
+  range                           : 37,632 – 188,160
+  num_conditions                  :            768
+  V_dd sweep length               :             61 points/task
+  Total (V, delay) training pts   :      378.77 M
+
+--- ASAP7 train transition (10pct subsample) ---
+  Unique training cells           : 76
+  Total training tasks            :        620,544
+  mean tasks / cell               :        8,165.1
+  median tasks / cell             :          7,437
+  range                           : 3,638 – 19,002
+  num_conditions                  :            768
+  V_dd sweep length               :             61 points/task
+  Total (V, delay) training pts   :       37.85 M
+
+--- ASAP7 train transition (full corpus, ×10 projection) ---
+  Projected total tasks           :      6,205,440
+  Projected (V, delay) samples    :      378.53 M
+
+--- Combined training-corpus headline (cell_delay + transition) ---
+  TSMC  : 89.67 M (V, delay) training samples
+  ASAP7 : 757.30 M (V, delay) training samples (transition portion ×10 projection)
+  Both  : 846.97 M total

@@ -1,0 +1,116 @@
+================================================================================
+MLP TSMC 2-D Dataset Build — Copy-Paste Commands  (Phase 2 Task 8)
+================================================================================
+Builder file : Projects/data_processing/MLP/build_and_split_dataset_tsmc_2d.py
+Plan         : docs/superpowers/plans/2026-05-30-maml-2d-training.md   §Task 8
+
+Each block below is a SINGLE LINE. Copy the entire block, paste into terminal.
+
+These are CPU/IO bound (no GPU). Each takes ~30 minutes for one
+(topology_type × delay_type) combo on a quiet host. They can run in
+parallel on different hosts, or sequentially on one.
+
+--------------------------------------------------------------------------------
+[STEP 0] Create output directories
+--------------------------------------------------------------------------------
+mkdir -p /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC_2d/intra_topology_data /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC_2d/topology_agnostic_data
+
+
+--------------------------------------------------------------------------------
+[STEP 1] BUILD 1/4 — intra_topology, delay_type cell  (recommended start)
+--------------------------------------------------------------------------------
+cd /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/MLP && nohup python -u build_and_split_dataset_tsmc_2d.py --data_dirs /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/TSMC_lib_files --output_dir /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC_2d/intra_topology_data --delay_type cell --topology_type intra_topology --param_a "1.427,1.457,1.430,1.470,1.443,1.483,1.43,1.47,1.43,1.47" --param_b "0.026,0.045,0,0,-0.026,-0.05,0.0208,-0.04,0.036,-0.0208" --param_c "0.024,2.000,0.024,2.000,0.024,2.000,0.024,2.000,0.024,2.000" --train_only --test_cell_types NONE > /tmp/mlp_2d_intra_cell.log 2>&1 & echo "PID: $!"
+
+
+--------------------------------------------------------------------------------
+[STEP 2] BUILD 2/4 — intra_topology, delay_type transition
+--------------------------------------------------------------------------------
+cd /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/MLP && nohup python -u build_and_split_dataset_tsmc_2d.py --data_dirs /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/TSMC_lib_files --output_dir /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC_2d/intra_topology_data --delay_type transition --topology_type intra_topology --param_a "1.427,1.457,1.430,1.470,1.443,1.483,1.43,1.47,1.43,1.47" --param_b "0.026,0.045,0,0,-0.026,-0.05,0.0208,-0.04,0.036,-0.0208" --param_c "0.024,2.000,0.024,2.000,0.024,2.000,0.024,2.000,0.024,2.000" --train_only --test_cell_types NONE > /tmp/mlp_2d_intra_trans.log 2>&1 & echo "PID: $!"
+
+
+--------------------------------------------------------------------------------
+[STEP 3] BUILD 3/4 — topology_agnostic, delay_type cell
+--------------------------------------------------------------------------------
+cd /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/MLP && nohup python -u build_and_split_dataset_tsmc_2d.py --data_dirs /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/TSMC_lib_files --output_dir /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC_2d/topology_agnostic_data --delay_type cell --topology_type topology_agnostic --param_a "1.427,1.457,1.430,1.470,1.443,1.483,1.43,1.47,1.43,1.47" --param_b "0.026,0.045,0,0,-0.026,-0.05,0.0208,-0.04,0.036,-0.0208" --param_c "0.024,2.000,0.024,2.000,0.024,2.000,0.024,2.000,0.024,2.000" --train_only --test_cell_types NONE > /tmp/mlp_2d_agn_cell.log 2>&1 & echo "PID: $!"
+
+
+--------------------------------------------------------------------------------
+[STEP 4] BUILD 4/4 — topology_agnostic, delay_type transition
+--------------------------------------------------------------------------------
+cd /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/MLP && nohup python -u build_and_split_dataset_tsmc_2d.py --data_dirs /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/TSMC_lib_files --output_dir /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC_2d/topology_agnostic_data --delay_type transition --topology_type topology_agnostic --param_a "1.427,1.457,1.430,1.470,1.443,1.483,1.43,1.47,1.43,1.47" --param_b "0.026,0.045,0,0,-0.026,-0.05,0.0208,-0.04,0.036,-0.0208" --param_c "0.024,2.000,0.024,2.000,0.024,2.000,0.024,2.000,0.024,2.000" --train_only --test_cell_types NONE > /tmp/mlp_2d_agn_trans.log 2>&1 & echo "PID: $!"
+
+
+--------------------------------------------------------------------------------
+[STEP 5] Monitor any of the 4 logs
+--------------------------------------------------------------------------------
+tail -f /tmp/mlp_2d_intra_cell.log
+grep -E "Found.*folders|Corner.*aggregated|Saved train|🎉|ERROR|Traceback" /tmp/mlp_2d_*.log | tail -20
+
+
+--------------------------------------------------------------------------------
+[STEP 6] Verify all 4 output files
+--------------------------------------------------------------------------------
+python -c "import torch, glob, os; [print(os.path.basename(f), tuple(torch.load(f, weights_only=False, map_location='cpu').shape)) for f in sorted(glob.glob('/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC_2d/*/tsmc_*_2d.pth'))]"
+
+
+--------------------------------------------------------------------------------
+[STEP 7] Smoke-test MLP MAML 2-D for 100 iterations (after STEP 1-4 finish)
+--------------------------------------------------------------------------------
+cd /home/tkdgn2907/Deepsets_test/MAML/Projects/pretraining/model_pretraining_code/MLP && python maml_mlp_training_2d.py --dataset_config 4 --data_type cell --inner 1 --innerdiv 100 --meta 16 --num_iterations 100 --gpu 0
+
+
+--------------------------------------------------------------------------------
+[STEP 8] Full sweep run (dry-run first, then live)
+--------------------------------------------------------------------------------
+bash /home/tkdgn2907/Deepsets_test/MAML/Projects/pretraining/model_pretraining_code/MLP/run_maml_mlp_2d_sweep.sh /home/tkdgn2907/Deepsets_test/MAML/Projects/pretraining/model_pretraining_code/MLP/json_configs/maml_mlp_2d_sweep_config.json --dry-run --no-commit
+
+bash /home/tkdgn2907/Deepsets_test/MAML/Projects/pretraining/model_pretraining_code/MLP/run_maml_mlp_2d_sweep.sh /home/tkdgn2907/Deepsets_test/MAML/Projects/pretraining/model_pretraining_code/MLP/json_configs/maml_mlp_2d_sweep_config.json --no-commit
+
+
+================================================================================
+EXPECTED OUTPUTS (verify after build)
+================================================================================
+dataset_TSMC_2d/intra_topology_data/tsmc_intra_topology_train_input_cell_2d.pth        ~ (N, 61, 6, 9)
+dataset_TSMC_2d/intra_topology_data/tsmc_intra_topology_train_output_cell_2d.pth       ~ (N, 61, 6, 1)
+dataset_TSMC_2d/intra_topology_data/tsmc_intra_topology_train_input_transition_2d.pth  ~ (N, 61, 6, 9)
+dataset_TSMC_2d/intra_topology_data/tsmc_intra_topology_train_output_transition_2d.pth ~ (N, 61, 6, 1)
+dataset_TSMC_2d/topology_agnostic_data/tsmc_topology_agnostic_train_input_cell_2d.pth  ~ (N, 61, 6, 9)
+dataset_TSMC_2d/topology_agnostic_data/tsmc_topology_agnostic_train_output_cell_2d.pth ~ (N, 61, 6, 1)
+dataset_TSMC_2d/topology_agnostic_data/tsmc_topology_agnostic_train_input_transition_2d.pth  ~ (N, 61, 6, 9)
+dataset_TSMC_2d/topology_agnostic_data/tsmc_topology_agnostic_train_output_transition_2d.pth ~ (N, 61, 6, 1)
+
+Smoke-test confirmed shape is correct for 1 corner × 6 train temps. With all 5
+corners included, N ≈ 5 × 27832 = ~139,000 per file (smoke test number scales).
+
+
+================================================================================
+NOTE ON --test_cell_types NONE
+================================================================================
+We currently pass `--test_cell_types NONE` for ALL 4 builds.  This means each
+train file contains ALL non-INV cells from the lib library, regardless of the
+topology_type suffix in the filename. The intra vs agnostic distinction here is
+PURELY filename — both files contain the same data.
+
+The validation script (when written) is what decides which cells are held out
+for intra vs agnostic evaluation, not the training-set construction. If a later
+experiment wants a stricter train/test split (e.g. exclude AN4D0 / SDFSNQD0
+etc. from training), re-run with `--test_cell_types AN4D0 ND3D0 ...` for intra
+and `--test_cell_types OA21D0 SDFSNQD0 ...` for agnostic. The 1-D MLP cell-type
+filter matches cell-name prefix exactly (case-insensitive) — see
+`filter_pin_data_by_cell_type` in the builder.
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+• "Found 5 TSMC folders" but you expect 6
+    → That's the regex bug we fixed; you're running the OLD builder. Pull the
+      latest build_and_split_dataset_tsmc_2d.py from this repo.
+• "All corners must share the same train temp set"
+    → Some corner folder is missing. Check
+      `ls /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/TSMC_lib_files
+      | grep -E '^TSMC_[FS][FT]?_'` and make sure each corner has all 6 train
+      temps (-25, 12p5, 37p5, 62p5, 87p5, 125).
+• `pin_data` is empty (no Cell processed)
+    → wrong `--delay_type`; cell vs transition data lives in different liberty
+      blocks.

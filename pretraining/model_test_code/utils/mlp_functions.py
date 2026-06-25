@@ -94,22 +94,24 @@ def evaluate_model_performance_mlp(initial_model, model_name, X, y, true_x, true
     Evaluate MLP model performance with grad/move normalization parameters.
 
     Args:
-        adaptation_method: 'selective_adam' (grad/move + conditional Adam) or 'adam' (direct Adam, no grad/move)
+        adaptation_method: 'selective_adam' (grad/move + conditional Adam), 'adam' (direct Adam, no grad/move),
+                           or 'sgd' (direct vanilla SGD, no grad/move — mirrors MAML inner-loop style).
 
     Returns:
         tuple: (total_loss, total_mape, predictions, actual_values, model, adam_used, mae_total)
     """
     import numpy as np
 
-    # If using 'adam' method, use direct Adam without grad/move scaling
-    if adaptation_method == 'adam':
+    # 'adam' / 'sgd': direct optimizer adaptation without grad/move scaling.
+    # The shared helper `model_functions_with_optim_mode_mlp` handles both.
+    if adaptation_method in ('adam', 'sgd'):
         result = model_functions_with_optim_mode_mlp(
             initial_model=initial_model,
             X=X,
             y=y,
             true_x=true_x,
             true_function=true_function,
-            optim_mode='adam',
+            optim_mode=adaptation_method,
             num_steps=40,
             lr=0.003,
             std=1,
@@ -188,12 +190,14 @@ def model_functions_with_optim_mode_mlp(initial_model, X, y, true_x, true_functi
     Args:
         optim_mode:
             - 'adam': Direct Adam optimization (no grad/move)
+            - 'sgd':  Direct vanilla SGD optimization (no grad/move, no momentum) —
+                      mirrors MAML's inner-loop adaptation style (`w - lr * grad`).
             - 'selective_adam': Grad+Move + Adam if loss > threshold
     """
     import math
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Determine if using grad/move scaling
+    # Determine if using grad/move scaling (only selective_adam does)
     use_grad_move = optim_mode in ['selective_adam']
 
     X = X.to(device)
@@ -222,8 +226,12 @@ def model_functions_with_optim_mode_mlp(initial_model, X, y, true_x, true_functi
     initial_loss = criterion(model(X), y_train) / K
     losses.append(initial_loss.item())
 
-    # Apply Adam optimization
-    optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
+    # Apply optimizer adaptation. SGD path uses vanilla SGD (no momentum) to
+    # mirror MAML inner-loop `w - lr * grad`; other paths use Adam.
+    if optim_mode == 'sgd':
+        optimizer = torch.optim.SGD(model.parameters(), lr=1e-2)
+    else:
+        optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
     for step in range(num_steps):
         loss = criterion(model(X), y_train) / K
         losses.append(loss.item())

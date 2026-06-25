@@ -1,0 +1,66 @@
+{
+  "ASAP7/AADAM": {
+    "n_cells": 44,
+    "mean_underpred_frac": 0.5199185213293499,
+    "max_underpred_frac": 0.6012357037532682,
+    "mean_pess_p95": 4.174152957309374,
+    "mean_max_underpred": 36.632321791215375,
+    "max_max_underpred": 142.74072265625
+  },
+  "ASAP7/GCN_Baseline": {
+    "n_cells": 43,
+    "mean_underpred_frac": 0.4706919602562972,
+    "max_underpred_frac": 0.6164125421657224,
+    "mean_pess_p95": 14.201330371235692,
+    "mean_max_underpred": 85.88649465871411,
+    "max_max_underpred": 497.372802734375
+  },
+  "ASAP7/GCN_MAML": {
+    "n_cells": 44,
+    "mean_underpred_frac": 0.4752423796403665,
+    "max_underpred_frac": 0.549587868852459,
+    "mean_pess_p95": 1.1154906771399753,
+    "mean_max_underpred": 20.2907657623291,
+    "max_max_underpred": 75.90826416015625
+  },
+  "ASAP7/MLP_MAML": {
+    "n_cells": 48,
+    "mean_underpred_frac": 0.4699789296859394,
+    "max_underpred_frac": 0.5195516275727049,
+    "mean_pess_p95": 1.4118043502171826,
+    "mean_max_underpred": 28.057435512542725,
+    "max_max_underpred": 128.7059326171875
+  },
+  "TSMC/AADAM": {
+    "n_cells": 88,
+    "mean_underpred_frac": 0.5483861004904317,
+    "max_underpred_frac": 0.7130181034162298,
+    "mean_pess_p95": 0.00956481843445957,
+    "mean_max_underpred": 0.19413895447823135,
+    "max_max_underpred": 1.0943450927734375
+  },
+  "TSMC/GCN_Baseline": {
+    "n_cells": 116,
+    "mean_underpred_frac": 0.4780903421898715,
+    "max_underpred_frac": 0.5970134939221591,
+    "mean_pess_p95": 0.030914653108680013,
+    "mean_max_underpred": 0.5659707698264512,
+    "max_max_underpred": 2.6897974014282227
+  },
+  "TSMC/GCN_MAML": {
+    "n_cells": 88,
+    "mean_underpred_frac": 0.48441982821919694,
+    "max_underpred_frac": 0.5343981264637002,
+    "mean_pess_p95": 0.0020601758585226788,
+    "mean_max_underpred": 0.1158385148102587,
+    "max_max_underpred": 0.8741073608398438
+  },
+  "TSMC/MLP_MAML": {
+    "n_cells": 88,
+    "mean_underpred_frac": 0.5029497103070987,
+    "max_underpred_frac": 0.5996654399464704,
+    "mean_pess_p95": 0.002174555561611088,
+    "mean_max_underpred": 0.10472538804804737,
+    "max_max_underpred": 0.6682777404785156
+  }
+}

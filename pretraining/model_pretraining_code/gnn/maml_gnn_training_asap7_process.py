@@ -2,7 +2,7 @@
 """
 MAML GNN Training for ASAP7 Process Dataset - Unified 3D Format
 
-Uses unified datasets from build_gnn_dataset_cached_with_process.py
+Uses unified datasets from asap7/build_gnn_dataset_process_cached_asap7.py
 Memory-mapped loading (mmap) for large datasets via torch.load(..., mmap=True).
 
 Key Features:

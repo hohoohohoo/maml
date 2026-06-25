@@ -1,0 +1,43 @@
+{
+  "experiment_name": "gnn_validation_asap7_iteration_sweep",
+  "description": "GNN iteration sweep for ASAP7 Process dataset - find saturation point",
+  "base_config": {
+    "model_type": "maml",
+    "data_type": "transition",
+    "graph_mode": "stage_aware",
+    "voltage_mode": "all_nodes",
+    "normalization": "zscore",
+    "temp_mode": "typical",
+    "inputport": false,
+    "related_pin_only": false,
+    "sample_suffix": "_10pct",
+    "mode": "extrapolation",
+    "total_points": 61,
+    "num_test_samples": 3000,
+    "save_results": true,
+    "filter_continuous": true,
+    "continuity_threshold": 0.18,
+    "pooling": "output",
+    "adaptation_method": "selective_adam",
+    "output_dir": "test",
+    "gpu": 7
+  },
+  "sweep_params": {
+    "experiment": ["topology_agnostic","intra_topology"],
+    "iterations": [ 6000, 8000, 10000, 20000, 30000, 100000, 200000],
+    "conv_hidden_dim": [64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [256],
+    "num_fc_layers": [2]
+  },
+  "maml_config": {
+    "innerdiv": 10,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1
+  },
+  "_comments": {
+    "iterations": "List of checkpoint iterations to evaluate for saturation analysis",
+    "checkpoint_pattern": "gnn_maml_asap7_process_cell_stage_aware_innerdiv1_meta16_iter{ITER}_inner1_conv64x2_fc256x2.pth",
+    "output_naming": "Results will include iteration number for easy comparison"
+  }
+}

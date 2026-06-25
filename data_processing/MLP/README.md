@@ -6,10 +6,10 @@
 
 ```
 data_processing/MLP/
-├── run_asap7_topology_preprocessing.py   # ASAP7 데이터셋 생성 래퍼
-├── run_tsmc_topology_preprocessing.py    # TSMC 데이터셋 생성 래퍼
-├── build_and_split_dataset_asap7.py      # ASAP7 데이터셋 빌더 (핵심 로직)
-├── build_and_split_dataset_tsmc.py       # TSMC 데이터셋 빌더 (핵심 로직)
+├── asap7/run_asap7_topology_preprocessing.py   # ASAP7 데이터셋 생성 래퍼
+├── tsmc/run_tsmc_topology_preprocessing.py    # TSMC 데이터셋 생성 래퍼
+├── asap7/build_and_split_dataset_asap7.py      # ASAP7 데이터셋 빌더 (핵심 로직)
+├── tsmc/build_and_split_dataset_tsmc.py       # TSMC 데이터셋 빌더 (핵심 로직)
 ├── README_DATASET_MERGE.md               # Dataset merge 관련 문서
 ├── utils/                                 # 유틸리티 모듈
 │   ├── datasets.py                       # 데이터셋 로더
@@ -29,10 +29,10 @@ data_processing/MLP/
 cd /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/MLP
 
 # Interactive mode (권장)
-python run_asap7_topology_preprocessing.py
+python asap7/run_asap7_topology_preprocessing.py
 
 # Command-line mode
-python run_asap7_topology_preprocessing.py -i 1 -d cell -t intra
+python asap7/run_asap7_topology_preprocessing.py -i 1 -d cell -t intra
 ```
 
 ### TSMC 데이터셋 생성
@@ -40,10 +40,10 @@ python run_asap7_topology_preprocessing.py -i 1 -d cell -t intra
 cd /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/MLP
 
 # Interactive mode (권장)
-python run_tsmc_topology_preprocessing.py
+python tsmc/run_tsmc_topology_preprocessing.py
 
 # Command-line mode
-python run_tsmc_topology_preprocessing.py -t original_agnostic -d transition
+python tsmc/run_tsmc_topology_preprocessing.py -t original_agnostic -d transition
 ```
 
 ---
@@ -213,7 +213,7 @@ DFCNQD1BWP30P140, SDFSNQD0BWP30P140
 ### ASAP7
 
 ```bash
-python run_asap7_topology_preprocessing.py [OPTIONS]
+python asap7/run_asap7_topology_preprocessing.py [OPTIONS]
 
 Options:
   -i, --data-dir-index {0,1,2,3}  데이터 디렉토리 인덱스
@@ -226,7 +226,7 @@ Options:
 ### TSMC
 
 ```bash
-python run_tsmc_topology_preprocessing.py [OPTIONS]
+python tsmc/run_tsmc_topology_preprocessing.py [OPTIONS]
 
 Options:
   -t, --dataset-type {original_agnostic,original_intra,nor_nand,seq}

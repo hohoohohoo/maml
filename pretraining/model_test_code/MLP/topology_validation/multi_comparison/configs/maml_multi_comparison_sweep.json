@@ -1,0 +1,35 @@
+{
+  "experiment_name": "maml_multi_comparison_sweep",
+  "description": "Multi-model comparison sweep with up to 5 models",
+  "base_config": {
+    "config": 1,
+    "num_test_samples": 1000000,
+    "save_results": true,
+    "total_points": 61,
+    "inner": 1,
+    "adaptation_method": "adam",
+    "gpu_id": "4"
+  },
+  "mlp_comparison": {
+    "enabled": true,
+    "mlp_model_type": "aadam",
+    "mlp_iterations": 300000
+  },
+  "sweep_params": {
+    "mode": ["extrapolation"],
+    "data_type": ["cell"],
+    "vary": ["layer_length"],
+    "comparison_configs": [
+      {
+        "innerdiv": [100],
+        "meta": [32],
+        "num_iterations": [300000],
+        "layer_length": [40,100]
+      }
+    ]
+  },
+  "_comments": {
+    "adaptation_method_options": "selective_adam (grad/move + conditional Adam), adam (direct Adam, no grad/move)",
+    "mlp_comparison_note": "Set enabled to true to compare MAML with MLP model"
+  }
+}

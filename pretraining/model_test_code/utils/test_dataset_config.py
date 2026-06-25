@@ -69,33 +69,47 @@ TEST_CONFIGS = {
         'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/training_loss_pretrained_asap7_topology_agnostic_{data_type}_{model_type}_{num_iterations}.pth",
     },
 
+    # ------------------------------------------------------------------------
+    # Configs 2, 3: TSMC (1-D MLP aligned with 1-D/2-D GNN convention).
+    # Both configs share:
+    #   - train_data_paths (one .pth pair under combined_data/)
+    #   - test_data_dir   (one per-cell directory tree)
+    #   - maml/mlp model paths (the same checkpoint is used for both intra
+    #     and agnostic evaluation — config 2 is the "train" face, config 3
+    #     is the "agnostic evaluation" face)
+    # They differ only in topology_type + default_cells, which steer the
+    # downstream result filename topology label so the existing analyzers
+    # (analyze_gcn_*/compare_topology.ipynb) automatically separate intra
+    # vs agnostic NRMSE.
+    # ------------------------------------------------------------------------
     2: {
         'name': 'TSMC Intra Topology',
         'tech': 'tsmc',
         'topology_type': 'intra',
 
-        # Default settings
-        'default_cells': ['AN4D0BWP30P140', 'NR3D1BWP30P140', 'OR4D0BWP30P140', 'ND3D0BWP30P140',
-                           'XOR3D1BWP30P140', 'XNR3D1BWP30P140'],
+        'default_cells': ['AN4D0BWP30P140', 'NR3D1BWP30P140', 'OR4D0BWP30P140',
+                          'ND3D0BWP30P140', 'XOR3D1BWP30P140', 'XNR3D1BWP30P140'],
         'default_gpu': '3',
         'default_meta': 32,
         'default_data_type': 'transition',
         'default_num_iterations': 300000,
 
-        # Training data paths
         'train_data_paths': lambda data_type: [
-            (f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/intra_topology_data/tsmc_intra_topology_train_input_{data_type}.pth",
-             f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/intra_topology_data/tsmc_intra_topology_train_output_{data_type}.pth")
+            (f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/MLP_dataset_TSMC/combined_data/tsmc_topology_agnostic_train_input_{data_type}.pth",
+             f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/MLP_dataset_TSMC/combined_data/tsmc_topology_agnostic_train_output_{data_type}.pth")
         ],
 
-        # Test data directory pattern
-        'test_data_dir': "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/intra_topology_data/",
-        'test_input_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_input_{data_type}.pth",
+        'test_data_dir': "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/MLP_dataset_TSMC/combined_data",
+        'test_input_pattern':  lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_input_{data_type}.pth",
         'test_output_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_output_{data_type}.pth",
 
-        # Model paths
-        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations, layer_length=40: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/taskdivide_all/{data_type}_innerdiv{innerdiv}_meta{meta}_intra_topology_519traintask_full1DMAML_weights_3hidden_({layer_length})_{num_iterations}_inner{inner}_upgraded_tsmc.pth",
-        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/training_loss_pretrained_tsmc_intra_topology_{data_type}_{model_type}_{num_iterations}.pth",
+        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations, layer_length=40: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/training_loss_taskdivide_all/{data_type}_innerdiv{innerdiv}_meta{meta}_combined_519traintask_full1DMAML_weights_3hidden_({layer_length})_{num_iterations}_inner{inner}_upgraded_tsmc.pth",
+        # Baseline checkpoint includes the topology_name token because
+        # baseline_mlp_training.py writes it that way. Training was run as
+        # config 2 (intra_topology), so config 2 AND config 3 both point at
+        # the intra_topology-tagged file — that lets the same checkpoint
+        # serve both intra and agnostic evaluation.
+        'mlp_model_path':  lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/training_loss_pretrained_tsmc_combined_intra_topology_{data_type}_{model_type}_{num_iterations}.pth",
     },
 
     3: {
@@ -103,31 +117,36 @@ TEST_CONFIGS = {
         'tech': 'tsmc',
         'topology_type': 'agnostic',
 
-        # Default settings
-        'default_cells': ['HA1D0BWP30P140', 'FA1D0BWP30P140', 'IOA21D0BWP30P140', 'IOA21D1BWP30P140',
-                          'OA21D0BWP30P140', 'OA21D1BWP30P140', 'OA211D0BWP30P140', 'OA211D1BWP30P140',
-                          'IAO21D0BWP30P140', 'IAO21D1BWP30P140', 'AO21D0BWP30P140', 'AO21D1BWP30P140',
-                          'AO211D0BWP30P140', 'AO211D1BWP30P140', 'SDFSNQD0BWP30P140', 'DFCNQD1BWP30P140'],
+        'default_cells': ['HA1D0BWP30P140',  'FA1D0BWP30P140',
+                          'IOA21D0BWP30P140', 'IOA21D1BWP30P140',
+                          'OA21D0BWP30P140',  'OA21D1BWP30P140',
+                          'OA211D0BWP30P140', 'OA211D1BWP30P140',
+                          'IAO21D0BWP30P140', 'IAO21D1BWP30P140',
+                          'AO21D0BWP30P140',  'AO21D1BWP30P140',
+                          'AO211D0BWP30P140', 'AO211D1BWP30P140',
+                          'SDFSNQD0BWP30P140', 'DFCNQD1BWP30P140'],
         'default_gpu': '1',
         'default_meta': 32,
         'default_data_type': 'transition',
         'default_num_iterations': 300000,
 
-        # Training data paths
+        # Identical train_data_paths and test_data_dir as config 2.
         'train_data_paths': lambda data_type: [
-            (f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/topology_agnostic_data/tsmc_topology_agnostic_train_input_{data_type}.pth",
-             f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/topology_agnostic_data/tsmc_topology_agnostic_train_output_{data_type}.pth")
+            (f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/MLP_dataset_TSMC/combined_data/tsmc_topology_agnostic_train_input_{data_type}.pth",
+             f"/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/MLP_dataset_TSMC/combined_data/tsmc_topology_agnostic_train_output_{data_type}.pth")
         ],
 
-        # Test data directory pattern
-        'test_data_dir': "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/dataset_TSMC/topology_agnostic_data",
-        'test_input_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_input_{data_type}.pth",
+        'test_data_dir': "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/MLP_dataset_TSMC/combined_data",
+        'test_input_pattern':  lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_input_{data_type}.pth",
         'test_output_pattern': lambda cell, data_type: f"{{test_dir}}/{cell}/tsmc_merged_test_output_{data_type}.pth",
 
-        # Model paths
-        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations, layer_length=40: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/taskdivide_all/{data_type}_innerdiv{innerdiv}_meta{meta}_topology_agnostic_519traintask_full1DMAML_weights_3hidden_({layer_length})_{num_iterations}_inner{inner}_upgraded_tsmc.pth",
-        'mlp_model_path': lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/training_loss_pretrained_tsmc_topology_agnostic_{data_type}_{model_type}_{num_iterations}.pth",
-    }
+        # Identical model paths as config 2 — the same checkpoint is used
+        # for both intra and agnostic evaluation.  Note: the baseline
+        # checkpoint name keeps the intra_topology token (not
+        # topology_agnostic) because training was run with config 2.
+        'maml_model_path': lambda data_type, innerdiv, meta, inner, num_iterations, layer_length=40: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/training_loss_taskdivide_all/{data_type}_innerdiv{innerdiv}_meta{meta}_combined_519traintask_full1DMAML_weights_3hidden_({layer_length})_{num_iterations}_inner{inner}_upgraded_tsmc.pth",
+        'mlp_model_path':  lambda data_type, model_type, num_iterations: f"/home/tkdgn2907/Deepsets_test/MAML/Projects/pretrained_models/MLP_pretrained_model/training_loss_pretrained_tsmc_combined_intra_topology_{data_type}_{model_type}_{num_iterations}.pth",
+    },
 }
 
 
@@ -142,10 +161,12 @@ def get_test_config(config_id):
         dict: Configuration dictionary
 
     Raises:
-        ValueError: If config_id is not in valid range (0-3)
+        ValueError: If config_id is not in valid range
     """
     if config_id not in TEST_CONFIGS:
-        raise ValueError(f"Invalid config ID: {config_id}. Must be 0-3.")
+        raise ValueError(
+            f"Invalid config ID: {config_id}. Must be one of {sorted(TEST_CONFIGS.keys())}."
+        )
 
     return TEST_CONFIGS[config_id]
 

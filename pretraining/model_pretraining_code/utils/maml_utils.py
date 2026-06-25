@@ -74,12 +74,10 @@ def find_pretrained_model(model_dir, layer_length, inner, innerdiv=100, meta=32,
     models = []
 
     if tech.lower() == 'tsmc':
-        # TSMC 패턴: 괄호가 있는 경우와 없는 경우 모두 검색
+        # TSMC 패턴 (combined ckpt; 괄호 있는 / 없는 변형 모두 검색)
         patterns = [
-            f"{data_type}_innerdiv{innerdiv}_meta{meta}_intra_topology_519traintask_full1DMAML_weights_3hidden_({layer_length})_*_inner{inner}_upgraded_tsmc.pth",
-            f"{data_type}_innerdiv{innerdiv}_meta{meta}_intra_topology_519traintask_full1DMAML_weights_3hidden_{layer_length}_*_inner{inner}_upgraded_tsmc.pth",
-            f"{data_type}_innerdiv{innerdiv}_meta{meta}_topology_agnostic_519traintask_full1DMAML_weights_3hidden_({layer_length})_*_inner{inner}_upgraded_tsmc.pth",
-            f"{data_type}_innerdiv{innerdiv}_meta{meta}_topology_agnostic_519traintask_full1DMAML_weights_3hidden_{layer_length}_*_inner{inner}_upgraded_tsmc.pth",
+            f"{data_type}_innerdiv{innerdiv}_meta{meta}_combined_519traintask_full1DMAML_weights_3hidden_({layer_length})_*_inner{inner}_upgraded_tsmc.pth",
+            f"{data_type}_innerdiv{innerdiv}_meta{meta}_combined_519traintask_full1DMAML_weights_3hidden_{layer_length}_*_inner{inner}_upgraded_tsmc.pth",
         ]
     else:  # asap7
         # ASAP7 패턴: intra-topology와 topology-agnostic 모두 지원

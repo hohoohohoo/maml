@@ -1,0 +1,1433 @@
+#!/usr/bin/env python3
+"""
+Analyze GCN sweep results for ASAP7 Topology Validation dataset
+
+Features:
+- Parse GCN result files with architecture info (conv_hidden_dim, num_conv_layers, fc_hidden_dim, num_fc_layers)
+- Compare different GCN architectures for ASAP7 dataset (11D node features)
+- Optionally include MLP MAML/AADAM baselines for comparison
+- Generate comparison plots and CSV exports
+
+File naming convention:
+- ASAP7_GCN_{experiment}_{cell}_{data_type}_{graph_mode}_{mode}_{model_type}_..._conv{X}x{Y}_fc{A}x{B}[_pool{pooling}][_filtered]_pred.npy
+"""
+
+import os
+import sys
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import argparse
+import glob
+import re
+
+# Set matplotlib style
+plt.style.use('ggplot')
+plt.rcParams['figure.facecolor'] = 'white'
+plt.rcParams['axes.facecolor'] = 'white'
+plt.rcParams['axes.grid'] = True
+plt.rcParams['grid.alpha'] = 0.3
+
+
+def parse_gcn_asap7_filename(filename):
+    """
+    Parse ASAP7 GCN result filename to extract metadata
+
+    Patterns:
+    - ASAP7_GCN_{experiment}_{cell}_{data_type}_{graph_mode}_{mode}_{model_type}_..._conv{X}x{Y}_fc{A}x{B}_{pred|act}.npy
+
+    Returns:
+        dict with metadata or None if not parseable
+    """
+    basename = os.path.basename(filename)
+
+    # Must be ASAP7 GCN result file
+    if 'ASAP7_GCN' not in basename:
+        return None
+
+    # Extract architecture: convXxY_fcAxB
+    arch_pattern = r'conv(\d+)x(\d+)_fc(\d+)x(\d+)'
+    arch_match = re.search(arch_pattern, basename)
+
+    if not arch_match:
+        return None
+
+    conv_hidden_dim = int(arch_match.group(1))
+    num_conv_layers = int(arch_match.group(2))
+    fc_hidden_dim = int(arch_match.group(3))
+    num_fc_layers = int(arch_match.group(4))
+
+    # Determine file type (pred or act)
+    if '_pred.npy' in basename:
+        file_type = 'pred'
+    elif '_act.npy' in basename:
+        file_type = 'act'
+    else:
+        return None
+
+    # Check for filtered flag
+    is_filtered = '_filtered_' in basename or basename.endswith('_filtered_pred.npy') or basename.endswith('_filtered_act.npy')
+
+    # Extract pooling mode
+    pool_match = re.search(r'_pool(output|max|add|mean)', basename)
+    if pool_match:
+        pooling = pool_match.group(1)
+    else:
+        pooling = 'mean'  # default
+
+    # Parse different filename patterns
+    result = {
+        'conv_hidden_dim': conv_hidden_dim,
+        'num_conv_layers': num_conv_layers,
+        'fc_hidden_dim': fc_hidden_dim,
+        'num_fc_layers': num_fc_layers,
+        'file_type': file_type,
+        'is_filtered': is_filtered,
+        'pooling': pooling,
+        'filename': basename,
+        'arch_string': f'conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}'
+    }
+
+    # Pattern: ASAP7_GCN_{experiment}_{cell}_{data_type}_{graph_mode}_{mode}_{model_type}_...
+    asap7_pattern = r'ASAP7_GCN_(intra_topology|topology_agnostic)_([A-Za-z0-9_]+)_(cell|transition)_(full_graph|stage_aware)_(interpolation|extrapolation)_(baseline|maml)'
+    match = re.search(asap7_pattern, basename)
+
+    if match:
+        result['prefix'] = 'ASAP7_GCN'
+        result['experiment'] = match.group(1)
+        result['cell'] = match.group(2)
+        result['data_type'] = match.group(3)
+        result['graph_mode'] = match.group(4)
+        result['mode'] = match.group(5)
+        result['model_type'] = 'GCN_' + match.group(6).upper()
+
+        # Extract MAML params if present
+        if 'maml' in basename.lower():
+            maml_params = re.search(r'innerdiv(\d+)_meta(\d+)_iter(\d+)_inner(\d+)', basename)
+            if maml_params:
+                result['innerdiv'] = int(maml_params.group(1))
+                result['meta'] = int(maml_params.group(2))
+                result['iterations'] = int(maml_params.group(3))
+                result['inner_steps'] = int(maml_params.group(4))
+        else:
+            # Baseline
+            iter_match = re.search(r'iter(\d+)', basename)
+            if iter_match:
+                result['iterations'] = int(iter_match.group(1))
+
+        return result
+
+    return None
+
+
+def parse_mlp_filename(filename):
+    """
+    Parse MLP result filename to extract metadata (for comparison)
+
+    Patterns:
+    - ASAP7_intra_topology_{cell}_cell_{mode}_MAML_innerdiv{X}_meta{Y}_layer{Z}_{iter}_{pred|act}.npy
+    - ASAP7_intra_topology_{cell}_cell_{mode}_aadam_{iter}_{pred|act}.npy
+    """
+    basename = os.path.basename(filename)
+
+    # MAML pattern
+    maml_pattern = r'(\w+)_([\w_]+)_(\w+)_(cell|transition)_(extrapolation|interpolation)_MAML_innerdiv(\d+)_meta(\d+)_layer(\d+)_(\d+)_(pred|act)\.npy'
+    match = re.match(maml_pattern, basename)
+
+    if match:
+        return {
+            'prefix': match.group(1),
+            'topology': match.group(2),
+            'cell': match.group(3),
+            'data_type': match.group(4),
+            'mode': match.group(5),
+            'model_type': 'MLP_MAML',
+            'innerdiv': int(match.group(6)),
+            'meta': int(match.group(7)),
+            'layer_length': int(match.group(8)),
+            'iterations': int(match.group(9)),
+            'file_type': match.group(10),
+            'filename': basename
+        }
+
+    # AADAM pattern
+    aadam_pattern = r'(\w+)_([\w_]+)_(\w+)_(cell|transition)_(extrapolation|interpolation)_(aadam|mlp)_(\d+)_(pred|act)\.npy'
+    match = re.match(aadam_pattern, basename)
+
+    if match:
+        return {
+            'prefix': match.group(1),
+            'topology': match.group(2),
+            'cell': match.group(3),
+            'data_type': match.group(4),
+            'mode': match.group(5),
+            'model_type': match.group(6).upper(),
+            'iterations': int(match.group(7)),
+            'file_type': match.group(8),
+            'filename': basename
+        }
+
+    return None
+
+
+def filter_by_extrapolation_region(predictions, actuals, ex_region='all',
+                                    group_size=61, left_bound=5, right_bound=56):
+    """
+    Filter predictions and actuals by extrapolation region.
+
+    For extrapolation mode with support indices [5, 30, 55]:
+    - left_bound = 5 (min support index)
+    - right_bound = 56 (max support index + 1)
+    - left_ex: indices 0 to left_bound-1 (0-4, 5 points per task)
+    - inter: indices left_bound to right_bound-1 (5-55, 51 points per task)
+    - right_ex: indices right_bound to 60 (56-60, 5 points per task)
+
+    Args:
+        predictions: flattened array of predictions
+        actuals: flattened array of actual values
+        ex_region: 'all', 'left_ex', 'right_ex', 'ex_only' (left + right combined)
+        group_size: number of points per task (default 61)
+        left_bound: left boundary index (default 5)
+        right_bound: right boundary index (default 56)
+
+    Returns:
+        filtered_predictions, filtered_actuals, new_group_size
+    """
+    if ex_region == 'all':
+        return predictions, actuals, group_size
+
+    predictions = np.array(predictions).flatten()
+    actuals = np.array(actuals).flatten()
+
+    n_groups = len(predictions) // group_size
+    if n_groups == 0:
+        return predictions, actuals, group_size
+
+    # Trim to exact multiples
+    predictions = predictions[:n_groups * group_size]
+    actuals = actuals[:n_groups * group_size]
+
+    # Reshape to (n_groups, group_size)
+    pred_grouped = predictions.reshape(n_groups, group_size)
+    act_grouped = actuals.reshape(n_groups, group_size)
+
+    if ex_region == 'left_ex':
+        # Left extrapolation: indices 0 to left_bound-1
+        pred_filtered = pred_grouped[:, :left_bound]
+        act_filtered = act_grouped[:, :left_bound]
+        new_group_size = left_bound
+    elif ex_region == 'right_ex':
+        # Right extrapolation: indices right_bound to end
+        pred_filtered = pred_grouped[:, right_bound:]
+        act_filtered = act_grouped[:, right_bound:]
+        new_group_size = group_size - right_bound
+    elif ex_region == 'ex_only':
+        # Both extrapolation regions combined (left + right)
+        pred_left = pred_grouped[:, :left_bound]
+        pred_right = pred_grouped[:, right_bound:]
+        act_left = act_grouped[:, :left_bound]
+        act_right = act_grouped[:, right_bound:]
+        pred_filtered = np.concatenate([pred_left, pred_right], axis=1)
+        act_filtered = np.concatenate([act_left, act_right], axis=1)
+        new_group_size = left_bound + (group_size - right_bound)
+    elif ex_region == 'inter':
+        # Interpolation region only: indices left_bound to right_bound-1
+        pred_filtered = pred_grouped[:, left_bound:right_bound]
+        act_filtered = act_grouped[:, left_bound:right_bound]
+        new_group_size = right_bound - left_bound
+    else:
+        return predictions, actuals, group_size
+
+    return pred_filtered.flatten(), act_filtered.flatten(), new_group_size
+
+
+def calculate_metrics(predictions, actuals, group_size=61):
+    """
+    Calculate NRMSE, RMSE metrics with 61-group averaging.
+    Vectorized implementation for speed.
+    """
+    predictions = np.array(predictions).flatten()
+    actuals = np.array(actuals).flatten()
+
+    # Filter out invalid values
+    valid_mask = ~(np.isnan(predictions) | np.isnan(actuals) | np.isinf(predictions) | np.isinf(actuals))
+    predictions = predictions[valid_mask]
+    actuals = actuals[valid_mask]
+
+    if len(predictions) == 0:
+        return None
+
+    # Group by 61 samples
+    n_groups = len(predictions) // group_size
+
+    if n_groups == 0:
+        n_groups = 1
+        group_size = len(predictions)
+
+    # Trim to exact group multiples
+    predictions = predictions[:n_groups * group_size]
+    actuals = actuals[:n_groups * group_size]
+
+    # Reshape to (n_groups, group_size)
+    pred_grouped = predictions.reshape(n_groups, group_size)
+    act_grouped = actuals.reshape(n_groups, group_size)
+
+    # Vectorized metrics calculation
+    mse_groups = np.mean((pred_grouped - act_grouped) ** 2, axis=1)
+    rmse_groups = np.sqrt(mse_groups)
+
+    y_ranges = np.max(act_grouped, axis=1) - np.min(act_grouped, axis=1)
+    y_ranges = np.where(y_ranges > 0, y_ranges, 1.0)
+    nrmse_groups = (rmse_groups / y_ranges) * 100
+
+    return {
+        'NRMSE': float(np.mean(nrmse_groups)),
+        'RMSE': float(np.mean(rmse_groups)),
+        'num_samples': len(predictions),
+        'num_groups': n_groups
+    }
+
+
+def load_gcn_asap7_results(data_dir, subdirs=None, ex_region='all'):
+    """Load all ASAP7 GCN results from directory and optional subdirectories
+
+    Args:
+        data_dir: base directory containing result files
+        subdirs: optional list of subdirectories to search
+        ex_region: extrapolation region filter ('all', 'left_ex', 'right_ex', 'ex_only', 'inter')
+    """
+    results = []
+
+    search_dirs = [data_dir]
+
+    if subdirs:
+        for subdir in subdirs:
+            subdir_path = os.path.join(data_dir, subdir)
+            if os.path.exists(subdir_path):
+                search_dirs.append(subdir_path)
+    else:
+        for item in os.listdir(data_dir):
+            item_path = os.path.join(data_dir, item)
+            if os.path.isdir(item_path):
+                search_dirs.append(item_path)
+
+    all_pred_files = []
+    for search_dir in search_dirs:
+        pred_files = glob.glob(os.path.join(search_dir, '*ASAP7_GCN*_pred.npy'))
+        all_pred_files.extend([(search_dir, f) for f in pred_files])
+
+    total_files = len(all_pred_files)
+    print(f"Found {total_files} ASAP7 GCN prediction files to process...")
+
+    for i, (search_dir, pred_file) in enumerate(all_pred_files):
+        if (i + 1) % 100 == 0 or i == total_files - 1:
+            print(f"  Processing: {i + 1}/{total_files} ({100*(i+1)//total_files}%)", end='\r')
+
+        act_file = pred_file.replace('_pred.npy', '_act.npy')
+        if not os.path.exists(act_file):
+            continue
+
+        metadata = parse_gcn_asap7_filename(pred_file)
+        if metadata is None:
+            continue
+
+        if os.path.getsize(pred_file) == 0:
+            continue
+
+        try:
+            predictions = np.load(pred_file)
+            actuals = np.load(act_file)
+
+            if len(predictions) != len(actuals) or len(predictions) == 0:
+                continue
+
+            # Apply extrapolation region filtering
+            filtered_pred, filtered_act, group_size = filter_by_extrapolation_region(
+                predictions, actuals, ex_region=ex_region
+            )
+
+            metrics = calculate_metrics(filtered_pred, filtered_act, group_size=group_size)
+            if metrics is None:
+                continue
+
+            result = {**metadata, **metrics}
+            result['source_dir'] = os.path.basename(search_dir)
+            result['ex_region'] = ex_region
+            results.append(result)
+
+        except Exception as e:
+            print(f"Error loading {pred_file}: {e}")
+            continue
+
+    print()
+    if ex_region != 'all':
+        print(f"  Extrapolation region filter: {ex_region}")
+    if not results:
+        return None
+
+    return pd.DataFrame(results)
+
+
+def load_mlp_results(data_dir, ex_region='all'):
+    """Load MLP results for comparison
+
+    Args:
+        data_dir: directory containing MLP result files
+        ex_region: extrapolation region filter ('all', 'left_ex', 'right_ex', 'ex_only', 'inter')
+    """
+    results = []
+    pred_files = glob.glob(os.path.join(data_dir, '*_pred.npy'))
+
+    total_files = len(pred_files)
+    if total_files > 0:
+        print(f"Found {total_files} MLP prediction files...")
+
+    for i, pred_file in enumerate(pred_files):
+        if total_files > 50 and ((i + 1) % 50 == 0 or i == total_files - 1):
+            print(f"  Processing MLP: {i + 1}/{total_files} ({100*(i+1)//total_files}%)", end='\r')
+
+        act_file = pred_file.replace('_pred.npy', '_act.npy')
+        if not os.path.exists(act_file):
+            continue
+
+        metadata = parse_mlp_filename(pred_file)
+        if metadata is None:
+            continue
+
+        try:
+            predictions = np.load(pred_file)
+            actuals = np.load(act_file)
+
+            if len(predictions) != len(actuals):
+                continue
+
+            # Apply extrapolation region filtering
+            filtered_pred, filtered_act, group_size = filter_by_extrapolation_region(
+                predictions, actuals, ex_region=ex_region
+            )
+
+            metrics = calculate_metrics(filtered_pred, filtered_act, group_size=group_size)
+            if metrics is None:
+                continue
+
+            result = {**metadata, **metrics}
+            result['ex_region'] = ex_region
+            results.append(result)
+
+        except Exception:
+            continue
+
+    if total_files > 50:
+        print()
+
+    if ex_region != 'all':
+        print(f"  MLP extrapolation region filter: {ex_region}")
+
+    if not results:
+        return None
+
+    return pd.DataFrame(results)
+
+
+def plot_architecture_comparison(df, output_dir, metric='NRMSE',
+                                 filter_mode=None, filter_graph_mode=None,
+                                 include_mlp=False, mlp_df=None,
+                                 scale_rmse=True, aadam_iter=None):
+    """Plot comparison of GCN architectures"""
+    filtered_df = df.copy()
+
+    if filter_mode:
+        filtered_df = filtered_df[filtered_df['mode'] == filter_mode]
+    if filter_graph_mode:
+        filtered_df = filtered_df[filtered_df['graph_mode'] == filter_graph_mode]
+
+    if len(filtered_df) == 0:
+        print(f"No data after filtering (mode={filter_mode}, graph_mode={filter_graph_mode})")
+        return
+
+    arch_groups = filtered_df.groupby('arch_string').agg({
+        metric: 'mean',
+        'num_samples': 'sum'
+    }).reset_index()
+
+    arch_groups = arch_groups.sort_values(metric)
+
+    fig, ax = plt.subplots(figsize=(14, 6))
+
+    x_vals = range(len(arch_groups))
+    y_vals = arch_groups[metric].values
+
+    if metric == 'RMSE' and scale_rmse:
+        y_vals = y_vals * 1000
+        ylabel = 'RMSE (x1000)'
+    else:
+        ylabel = metric
+
+    bars = ax.bar(x_vals, y_vals, alpha=0.7, edgecolor='black')
+    colors = plt.cm.viridis(np.linspace(0, 1, len(bars)))
+    for bar, color in zip(bars, colors):
+        bar.set_color(color)
+
+    for i, y in enumerate(y_vals):
+        ax.text(i, y, f'{y:.3f}', ha='center', va='bottom', fontsize=9, fontweight='bold')
+
+    ax.set_xticks(x_vals)
+    ax.set_xticklabels(arch_groups['arch_string'], rotation=45, ha='right')
+
+    if include_mlp and mlp_df is not None:
+        mlp_filtered = mlp_df.copy()
+        if filter_mode:
+            mlp_filtered = mlp_filtered[mlp_filtered['mode'] == filter_mode]
+        # Filter MLP to only cells that exist in GCN data
+        if 'cell' in filtered_df.columns and 'cell' in mlp_filtered.columns:
+            gcn_cells = filtered_df['cell'].dropna().unique()
+            mlp_filtered = mlp_filtered[mlp_filtered['cell'].isin(gcn_cells)]
+
+        # Filter MLP by data_type to match GCN data
+        if 'data_type' in filtered_df.columns and 'data_type' in mlp_filtered.columns:
+            gcn_data_type = filtered_df['data_type'].iloc[0] if len(filtered_df) > 0 else 'cell'
+            mlp_filtered = mlp_filtered[mlp_filtered['data_type'] == gcn_data_type]
+
+        if len(mlp_filtered) > 0:
+            aadam_data = mlp_filtered[mlp_filtered['model_type'] == 'AADAM']
+            if aadam_iter is not None and 'iterations' in aadam_data.columns:
+                aadam_data = aadam_data[aadam_data['iterations'] == aadam_iter]
+            if len(aadam_data) > 0:
+                aadam_val = aadam_data[metric].mean()
+                if metric == 'RMSE' and scale_rmse:
+                    aadam_val = aadam_val * 1000
+                iter_label = f' (iter={aadam_iter})' if aadam_iter else ''
+                ax.axhline(y=aadam_val, color='red', linestyle='--', linewidth=2.5,
+                          label=f'MLP Aadam{iter_label}: {aadam_val:.3f}', alpha=0.8)
+
+            maml_data = mlp_filtered[mlp_filtered['model_type'] == 'MLP_MAML']
+            if len(maml_data) > 0:
+                maml_val = maml_data[metric].mean()
+                if metric == 'RMSE' and scale_rmse:
+                    maml_val = maml_val * 1000
+                ax.axhline(y=maml_val, color='blue', linestyle=':', linewidth=2,
+                          label=f'MLP MAML: {maml_val:.3f}', alpha=0.7)
+
+    title_parts = ['ASAP7 GCN Architecture Comparison']
+    if filter_mode:
+        title_parts.append(f'Mode: {filter_mode}')
+    if filter_graph_mode:
+        title_parts.append(f'Graph: {filter_graph_mode}')
+
+    ax.set_title(' - '.join(title_parts), fontsize=14, fontweight='bold')
+    ax.set_xlabel('Architecture', fontsize=11)
+    ax.set_ylabel(ylabel, fontsize=11, fontweight='bold')
+    ax.grid(True, alpha=0.3)
+    ax.legend(loc='best')
+
+    plt.tight_layout()
+
+    filename_parts = ['asap7_gcn_arch_comparison', metric.lower()]
+    # Add data_type to filename if single type and not 'cell'
+    if 'data_type' in filtered_df.columns:
+        data_types = filtered_df['data_type'].unique()
+        if len(data_types) == 1 and data_types[0] != 'cell':
+            filename_parts.append(data_types[0])
+    if filter_mode:
+        filename_parts.append(filter_mode)
+    if filter_graph_mode:
+        filename_parts.append(filter_graph_mode)
+
+    plot_path = os.path.join(output_dir, '_'.join(filename_parts) + '.png')
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Saved: {plot_path}")
+    plt.close()
+
+
+def plot_multi_metric_comparison(df, output_dir,
+                                  filter_mode=None, filter_graph_mode=None,
+                                  filter_experiment=None,
+                                  include_mlp=False, mlp_df=None,
+                                  scale_rmse=True, top_n=10, aadam_iter=None):
+    """Plot multiple metrics comparison (NRMSE, RMSE) in subplots"""
+    metrics = ['NRMSE', 'RMSE']
+
+    filtered_df = df.copy()
+    if filter_mode:
+        filtered_df = filtered_df[filtered_df['mode'] == filter_mode]
+    if filter_graph_mode:
+        filtered_df = filtered_df[filtered_df['graph_mode'] == filter_graph_mode]
+    if filter_experiment:
+        filtered_df = filtered_df[filtered_df['experiment'] == filter_experiment]
+
+    if len(filtered_df) == 0:
+        print(f"No data after filtering")
+        return
+
+    arch_groups = filtered_df.groupby('arch_string').agg({
+        'NRMSE': 'mean',
+        'RMSE': 'mean',
+        'num_samples': 'sum'
+    }).reset_index()
+
+    arch_groups = arch_groups.sort_values('NRMSE').head(top_n)
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+
+    title_parts = ['ASAP7 GCN Architecture Comparison']
+    if filter_experiment:
+        title_parts.append(f'{filter_experiment}')
+    if filter_mode:
+        title_parts.append(f'{filter_mode.upper()}')
+    if filter_graph_mode:
+        title_parts.append(f'{filter_graph_mode}')
+    fig.suptitle(' - '.join(title_parts), fontsize=16, fontweight='bold')
+
+    for idx, metric in enumerate(metrics):
+        ax = axes[idx]
+
+        gcn_y_vals = arch_groups[metric].values.copy()
+        gcn_labels = arch_groups['arch_string'].tolist()
+
+        if metric == 'RMSE' and scale_rmse:
+            gcn_y_vals = gcn_y_vals * 1000
+            ylabel = 'RMSE (x1000)'
+        else:
+            ylabel = metric
+
+        mlp_maml_val = None
+        aadam_val = None
+
+        if include_mlp and mlp_df is not None:
+            mlp_filtered = mlp_df.copy()
+            if filter_mode:
+                mlp_filtered = mlp_filtered[mlp_filtered['mode'] == filter_mode]
+            # Filter MLP to only cells that exist in GCN data
+            if 'cell' in filtered_df.columns and 'cell' in mlp_filtered.columns:
+                gcn_cells = filtered_df['cell'].dropna().unique()
+                mlp_filtered = mlp_filtered[mlp_filtered['cell'].isin(gcn_cells)]
+
+            # Filter MLP by data_type to match GCN data
+            if 'data_type' in filtered_df.columns and 'data_type' in mlp_filtered.columns:
+                gcn_data_type = filtered_df['data_type'].iloc[0] if len(filtered_df) > 0 else 'cell'
+                mlp_filtered = mlp_filtered[mlp_filtered['data_type'] == gcn_data_type]
+
+            if len(mlp_filtered) > 0:
+                maml_data = mlp_filtered[mlp_filtered['model_type'] == 'MLP_MAML']
+                required_cols = ['innerdiv', 'meta', 'layer_length', 'iterations']
+                if all(col in maml_data.columns for col in required_cols):
+                    maml_specific = maml_data[
+                        (maml_data['innerdiv'] == 100) &
+                        (maml_data['meta'] == 32) &
+                        (maml_data['layer_length'] == 40) &
+                        (maml_data['iterations'] == 300000)
+                    ]
+                    if len(maml_specific) > 0:
+                        mlp_maml_val = maml_specific[metric].mean()
+                        if metric == 'RMSE' and scale_rmse:
+                            mlp_maml_val = mlp_maml_val * 1000
+
+                aadam_data = mlp_filtered[mlp_filtered['model_type'] == 'AADAM']
+                if aadam_iter is not None and 'iterations' in aadam_data.columns:
+                    aadam_data = aadam_data[aadam_data['iterations'] == aadam_iter]
+                if len(aadam_data) > 0:
+                    aadam_val = aadam_data[metric].mean()
+                    if metric == 'RMSE' and scale_rmse:
+                        aadam_val = aadam_val * 1000
+
+        if mlp_maml_val is not None:
+            all_labels = ['MLP MAML\n(id100_m32_l40_i300k)'] + gcn_labels
+            all_y_vals = np.concatenate([[mlp_maml_val], gcn_y_vals])
+            bar_colors = ['#1f77b4'] + [plt.cm.viridis(i / len(gcn_labels)) for i in range(len(gcn_labels))]
+        else:
+            all_labels = gcn_labels
+            all_y_vals = gcn_y_vals
+            bar_colors = [plt.cm.viridis(i / len(gcn_labels)) for i in range(len(gcn_labels))]
+
+        x_vals = range(len(all_labels))
+
+        bars = ax.bar(x_vals, all_y_vals, alpha=0.7, edgecolor='black')
+        for bar, color in zip(bars, bar_colors):
+            bar.set_color(color)
+
+        for i, y in enumerate(all_y_vals):
+            ax.text(i, y, f'{y:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+
+        ax.set_xticks(x_vals)
+        ax.set_xticklabels(all_labels, rotation=45, ha='right', fontsize=8)
+
+        if aadam_val is not None:
+            iter_label = f' (iter={aadam_iter})' if aadam_iter else ''
+            ax.axhline(y=aadam_val, color='red', linestyle='--', linewidth=2.5,
+                      label=f'MLP Aadam{iter_label}: {aadam_val:.3f}', alpha=0.8)
+            ax.text(len(all_labels) - 0.5, aadam_val, f'Aadam: {aadam_val:.3f}',
+                   fontsize=9, color='red', va='bottom', ha='right', fontweight='bold')
+
+        if aadam_val is not None and len(gcn_y_vals) > 0:
+            best_gcn_val = gcn_y_vals.min()
+            if aadam_val > 0:
+                improvement = ((aadam_val - best_gcn_val) / aadam_val) * 100
+                if improvement > 0:
+                    ax.text(0.02, 0.98, f'Best GCN: {improvement:.1f}% better than Aadam',
+                           transform=ax.transAxes, fontsize=9, color='green',
+                           va='top', ha='left', fontweight='bold',
+                           bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
+
+        ax.set_xlabel('Architecture', fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=11, fontweight='bold')
+        ax.set_title(f'{ylabel} Comparison', fontsize=12)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper right', fontsize=8)
+
+    plt.tight_layout()
+
+    filename_parts = ['asap7_gcn_multi_metric']
+    # Add data_type to filename if single type and not 'cell'
+    if 'data_type' in filtered_df.columns:
+        data_types = filtered_df['data_type'].unique()
+        if len(data_types) == 1 and data_types[0] != 'cell':
+            filename_parts.append(data_types[0])
+    if filter_experiment:
+        filename_parts.append(filter_experiment)
+    if filter_mode:
+        filename_parts.append(filter_mode)
+    if filter_graph_mode:
+        filename_parts.append(filter_graph_mode)
+
+    plot_path = os.path.join(output_dir, '_'.join(filename_parts) + '.png')
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Saved: {plot_path}")
+    plt.close()
+
+
+def plot_selected_architecture(df, output_dir, arch_string,
+                               include_mlp=False, mlp_df=None,
+                               scale_rmse=True, aadam_iter=None):
+    """Plot results for a specific GCN architecture across different conditions"""
+    arch_df = df[df['arch_string'] == arch_string]
+
+    if len(arch_df) == 0:
+        print(f"No data found for architecture: {arch_string}")
+        return
+
+    metrics = ['NRMSE', 'RMSE']
+
+    groups = arch_df.groupby(['mode', 'graph_mode']).agg({
+        'NRMSE': 'mean',
+        'RMSE': 'mean',
+        'num_samples': 'sum'
+    }).reset_index()
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+    fig.suptitle(f'ASAP7 GCN Architecture: {arch_string}', fontsize=16, fontweight='bold')
+
+    groups['label'] = groups['mode'] + '\n' + groups['graph_mode']
+
+    for idx, metric in enumerate(metrics):
+        ax = axes[idx]
+
+        x_vals = range(len(groups))
+        y_vals = groups[metric].values
+
+        if metric == 'RMSE' and scale_rmse:
+            y_vals = y_vals * 1000
+            ylabel = 'RMSE (x1000)'
+        else:
+            ylabel = metric
+
+        bars = ax.bar(x_vals, y_vals, alpha=0.7, edgecolor='black')
+        colors = plt.cm.Set2(np.linspace(0, 1, len(bars)))
+        for bar, color in zip(bars, colors):
+            bar.set_color(color)
+
+        for i, y in enumerate(y_vals):
+            ax.text(i, y, f'{y:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+
+        ax.set_xticks(x_vals)
+        ax.set_xticklabels(groups['label'], fontsize=9)
+
+        if include_mlp and mlp_df is not None and len(mlp_df) > 0:
+            aadam_data = mlp_df[mlp_df['model_type'] == 'AADAM']
+            if aadam_iter is not None and 'iterations' in aadam_data.columns:
+                aadam_data = aadam_data[aadam_data['iterations'] == aadam_iter]
+            if len(aadam_data) > 0:
+                aadam_val = aadam_data[metric].mean()
+                if metric == 'RMSE' and scale_rmse:
+                    aadam_val = aadam_val * 1000
+                iter_label = f' (iter={aadam_iter})' if aadam_iter else ''
+                ax.axhline(y=aadam_val, color='red', linestyle='--', linewidth=2.5,
+                          label=f'MLP Aadam{iter_label}: {aadam_val:.3f}', alpha=0.8)
+
+            maml_data = mlp_df[mlp_df['model_type'] == 'MLP_MAML']
+            if len(maml_data) > 0:
+                maml_val = maml_data[metric].mean()
+                if metric == 'RMSE' and scale_rmse:
+                    maml_val = maml_val * 1000
+                ax.axhline(y=maml_val, color='blue', linestyle=':', linewidth=2,
+                          label=f'MLP MAML: {maml_val:.3f}', alpha=0.7)
+
+        ax.set_xlabel('Mode / Graph Mode', fontsize=10)
+        ax.set_ylabel(ylabel, fontsize=11, fontweight='bold')
+        ax.set_title(f'{ylabel}', fontsize=12)
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc='upper right', fontsize=8)
+
+    plt.tight_layout()
+
+    safe_arch = arch_string.replace('x', '_')
+    # Add data_type to filename if single type and not 'cell'
+    data_type_suffix = ''
+    if 'data_type' in arch_df.columns:
+        data_types = arch_df['data_type'].unique()
+        if len(data_types) == 1 and data_types[0] != 'cell':
+            data_type_suffix = f'_{data_types[0]}'
+    plot_path = os.path.join(output_dir, f'asap7_gcn_selected_{safe_arch}{data_type_suffix}.png')
+    plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+    print(f"Saved: {plot_path}")
+    plt.close()
+
+
+def plot_per_cell_comparison(df, output_dir, include_mlp=False, mlp_df=None,
+                             scale_rmse=True, top_n=10, aadam_iter=None):
+    """Generate separate plots for each cell type."""
+    if 'cell' not in df.columns:
+        print("No 'cell' column found - skipping per-cell plots")
+        return
+
+    cells = df['cell'].dropna().unique()
+    if len(cells) == 0:
+        print("No cell data found - skipping per-cell plots")
+        return
+
+    print(f"\nGenerating per-cell plots for {len(cells)} cells...")
+
+    per_cell_dir = os.path.join(output_dir, 'per_cell')
+    os.makedirs(per_cell_dir, exist_ok=True)
+
+    metrics = ['NRMSE', 'RMSE']
+
+    for cell in cells:
+        cell_df = df[df['cell'] == cell]
+
+        if len(cell_df) == 0:
+            continue
+
+        modes = cell_df['mode'].dropna().unique()
+        graph_modes = cell_df['graph_mode'].dropna().unique()
+
+        for mode in modes:
+            for graph_mode in graph_modes:
+                filtered_df = cell_df[(cell_df['mode'] == mode) & (cell_df['graph_mode'] == graph_mode)]
+
+                if len(filtered_df) == 0:
+                    continue
+
+                arch_groups = filtered_df.groupby('arch_string').agg({
+                    'NRMSE': 'mean',
+                    'RMSE': 'mean',
+                    'num_samples': 'sum'
+                }).reset_index()
+
+                arch_groups = arch_groups.sort_values('NRMSE').head(top_n)
+
+                if len(arch_groups) == 0:
+                    continue
+
+                fig, axes = plt.subplots(1, 2, figsize=(14, 6))
+                fig.suptitle(f'Cell: {cell} - {mode.upper()} - {graph_mode}',
+                            fontsize=16, fontweight='bold')
+
+                mlp_maml_vals = {}
+                aadam_vals = {}
+
+                if include_mlp and mlp_df is not None:
+                    mlp_filtered = mlp_df.copy()
+
+                    if 'cell' in mlp_filtered.columns:
+                        mlp_filtered = mlp_filtered[mlp_filtered['cell'] == cell]
+                    if 'mode' in mlp_filtered.columns:
+                        mlp_filtered = mlp_filtered[mlp_filtered['mode'] == mode]
+                    # Filter by data_type to match GCN data (cell vs transition)
+                    if 'data_type' in mlp_filtered.columns and 'data_type' in filtered_df.columns:
+                        gcn_data_type = filtered_df['data_type'].iloc[0] if len(filtered_df) > 0 else 'cell'
+                        mlp_filtered = mlp_filtered[mlp_filtered['data_type'] == gcn_data_type]
+
+                    if len(mlp_filtered) > 0:
+                        maml_data = mlp_filtered[mlp_filtered['model_type'] == 'MLP_MAML']
+                        required_cols = ['innerdiv', 'meta', 'layer_length', 'iterations']
+                        if all(col in maml_data.columns for col in required_cols):
+                            maml_specific = maml_data[
+                                (maml_data['innerdiv'] == 100) &
+                                (maml_data['meta'] == 32) &
+                                (maml_data['layer_length'] == 40) &
+                                (maml_data['iterations'] == 300000)
+                            ]
+                            if len(maml_specific) > 0:
+                                for m in metrics:
+                                    val = maml_specific[m].mean()
+                                    if m == 'RMSE' and scale_rmse:
+                                        val = val * 1000
+                                    mlp_maml_vals[m] = val
+
+                        aadam_data = mlp_filtered[mlp_filtered['model_type'] == 'AADAM']
+                        if aadam_iter is not None and 'iterations' in aadam_data.columns:
+                            aadam_data = aadam_data[aadam_data['iterations'] == aadam_iter]
+                        if len(aadam_data) > 0:
+                            for m in metrics:
+                                val = aadam_data[m].mean()
+                                if m == 'RMSE' and scale_rmse:
+                                    val = val * 1000
+                                aadam_vals[m] = val
+
+                for idx, metric in enumerate(metrics):
+                    ax = axes[idx]
+
+                    gcn_labels = arch_groups['arch_string'].tolist()
+                    gcn_y_vals = arch_groups[metric].values.copy()
+
+                    if metric == 'RMSE' and scale_rmse:
+                        gcn_y_vals = gcn_y_vals * 1000
+                        ylabel = 'RMSE (x1000)'
+                    else:
+                        ylabel = metric
+
+                    if metric in mlp_maml_vals:
+                        all_labels = ['MLP MAML\n(id100_m32_l40_i300k)'] + gcn_labels
+                        all_y_vals = np.concatenate([[mlp_maml_vals[metric]], gcn_y_vals])
+                        bar_colors = ['#1f77b4'] + [plt.cm.viridis(i / len(gcn_labels)) for i in range(len(gcn_labels))]
+                    else:
+                        all_labels = gcn_labels
+                        all_y_vals = gcn_y_vals
+                        bar_colors = [plt.cm.viridis(i / len(gcn_labels)) for i in range(len(gcn_labels))]
+
+                    x_vals = range(len(all_labels))
+
+                    bars = ax.bar(x_vals, all_y_vals, alpha=0.7, edgecolor='black')
+                    for bar, color in zip(bars, bar_colors):
+                        bar.set_color(color)
+
+                    for i, y in enumerate(all_y_vals):
+                        ax.text(i, y, f'{y:.3f}', ha='center', va='bottom', fontsize=10, fontweight='bold')
+
+                    ax.set_xticks(x_vals)
+                    ax.set_xticklabels(all_labels, rotation=45, ha='right', fontsize=8)
+
+                    aadam_val = aadam_vals.get(metric)
+                    if aadam_val is not None:
+                        iter_label = f' (iter={aadam_iter})' if aadam_iter else ''
+                        ax.axhline(y=aadam_val, color='red', linestyle='--', linewidth=2.5,
+                                  label=f'MLP Aadam{iter_label}: {aadam_val:.3f}', alpha=0.8)
+
+                    if aadam_val is not None and len(gcn_y_vals) > 0:
+                        best_gcn_val = gcn_y_vals.min()
+                        if aadam_val > 0:
+                            improvement = ((aadam_val - best_gcn_val) / aadam_val) * 100
+                            if improvement > 0:
+                                ax.text(0.02, 0.98, f'Best GCN: {improvement:.1f}% better',
+                                       transform=ax.transAxes, fontsize=9, color='green',
+                                       va='top', ha='left', fontweight='bold',
+                                       bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.5))
+
+                    ax.set_xlabel('Architecture', fontsize=10)
+                    ax.set_ylabel(ylabel, fontsize=11, fontweight='bold')
+                    ax.set_title(f'{ylabel}', fontsize=12)
+                    ax.grid(True, alpha=0.3)
+                    ax.legend(loc='upper right', fontsize=8)
+
+                plt.tight_layout()
+
+                safe_cell = cell.replace('/', '_').replace('\\', '_')
+                # Add data_type to filename if single type and not 'cell'
+                data_type_suffix = ''
+                if 'data_type' in filtered_df.columns:
+                    data_types = filtered_df['data_type'].unique()
+                    if len(data_types) == 1 and data_types[0] != 'cell':
+                        data_type_suffix = f'_{data_types[0]}'
+                plot_path = os.path.join(per_cell_dir, f'{safe_cell}_{mode}_{graph_mode}{data_type_suffix}.png')
+                plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+                plt.close()
+
+        print(f"  Saved plots for cell: {cell}")
+
+    print(f"Per-cell plots saved to: {per_cell_dir}")
+
+
+def plot_arch_all_cells_comparison(df, output_dir, include_mlp=False, mlp_df=None,
+                                    scale_rmse=True, aadam_iter=None,
+                                    filter_mode=None, filter_graph_mode=None,
+                                    filter_experiment=None):
+    """
+    Generate comparison plots for each architecture showing all cells.
+
+    For each unique architecture, creates a PNG file with 2 subplots (NRMSE, RMSE)
+    showing performance across all cells.
+    """
+    if 'cell' not in df.columns:
+        print("No 'cell' column found - skipping architecture-cell comparison plots")
+        return
+
+    # Apply filters
+    filtered_df = df.copy()
+    if filter_mode:
+        filtered_df = filtered_df[filtered_df['mode'] == filter_mode]
+    if filter_graph_mode:
+        filtered_df = filtered_df[filtered_df['graph_mode'] == filter_graph_mode]
+    if filter_experiment and 'experiment' in filtered_df.columns:
+        filtered_df = filtered_df[filtered_df['experiment'] == filter_experiment]
+
+    if len(filtered_df) == 0:
+        print(f"No data after filtering for arch-cell comparison")
+        return
+
+    architectures = filtered_df['arch_string'].dropna().unique()
+    cells = sorted(filtered_df['cell'].dropna().unique())
+
+    if len(architectures) == 0 or len(cells) == 0:
+        print("No architectures or cells found - skipping arch-cell comparison")
+        return
+
+    print(f"\nGenerating architecture-cell comparison plots for {len(architectures)} architectures, {len(cells)} cells...")
+
+    # Create arch_cell_comparison subdirectory
+    arch_cell_dir = os.path.join(output_dir, 'arch_cell_comparison')
+    os.makedirs(arch_cell_dir, exist_ok=True)
+
+    metrics = ['NRMSE', 'RMSE']
+
+    # Prepare MLP baseline values per cell
+    mlp_baselines = {}
+    if include_mlp and mlp_df is not None:
+        mlp_filtered = mlp_df.copy()
+        if filter_mode and 'mode' in mlp_filtered.columns:
+            mlp_filtered = mlp_filtered[mlp_filtered['mode'] == filter_mode]
+
+        # Filter MLP by data_type to match GCN data
+        if 'data_type' in filtered_df.columns and 'data_type' in mlp_filtered.columns:
+            gcn_data_type = filtered_df['data_type'].iloc[0] if len(filtered_df) > 0 else 'cell'
+            mlp_filtered = mlp_filtered[mlp_filtered['data_type'] == gcn_data_type]
+
+        if 'cell' in mlp_filtered.columns:
+            for cell in cells:
+                cell_mlp = mlp_filtered[mlp_filtered['cell'] == cell]
+                if len(cell_mlp) == 0:
+                    continue
+
+                mlp_baselines[cell] = {}
+
+                # MLP MAML
+                maml_data = cell_mlp[cell_mlp['model_type'] == 'MLP_MAML']
+                required_cols = ['innerdiv', 'meta', 'layer_length', 'iterations']
+                if all(col in maml_data.columns for col in required_cols):
+                    maml_specific = maml_data[
+                        (maml_data['innerdiv'] == 100) &
+                        (maml_data['meta'] == 32) &
+                        (maml_data['layer_length'] == 40) &
+                        (maml_data['iterations'] == 300000)
+                    ]
+                    if len(maml_specific) > 0:
+                        for m in metrics:
+                            val = maml_specific[m].mean()
+                            if m == 'RMSE' and scale_rmse:
+                                val = val * 1000
+                            if m not in mlp_baselines[cell]:
+                                mlp_baselines[cell][m] = {}
+                            mlp_baselines[cell][m]['maml'] = val
+
+                # AADAM
+                aadam_data = cell_mlp[cell_mlp['model_type'] == 'AADAM']
+                if aadam_iter is not None and 'iterations' in aadam_data.columns:
+                    aadam_data = aadam_data[aadam_data['iterations'] == aadam_iter]
+                if len(aadam_data) > 0:
+                    for m in metrics:
+                        val = aadam_data[m].mean()
+                        if m == 'RMSE' and scale_rmse:
+                            val = val * 1000
+                        if m not in mlp_baselines[cell]:
+                            mlp_baselines[cell][m] = {}
+                        mlp_baselines[cell][m]['aadam'] = val
+
+    # Generate plot for each architecture
+    for arch in architectures:
+        arch_df = filtered_df[filtered_df['arch_string'] == arch]
+
+        if len(arch_df) == 0:
+            continue
+
+        # Aggregate by cell
+        cell_groups = arch_df.groupby('cell').agg({
+            'NRMSE': 'mean',
+            'RMSE': 'mean',
+            'num_samples': 'sum'
+        }).reset_index()
+
+        # Sort by NRMSE
+        cell_groups = cell_groups.sort_values('NRMSE')
+
+        if len(cell_groups) == 0:
+            continue
+
+        # Create figure with 2 subplots
+        fig, axes = plt.subplots(1, 2, figsize=(14, 7))
+
+        # Title
+        title_parts = [f'ASAP7 - Architecture: {arch}']
+        if filter_experiment:
+            title_parts.append(f'Exp: {filter_experiment}')
+        if filter_mode:
+            title_parts.append(f'Mode: {filter_mode}')
+        if filter_graph_mode:
+            title_parts.append(f'Graph: {filter_graph_mode}')
+        fig.suptitle(' - '.join(title_parts), fontsize=14, fontweight='bold')
+
+        cell_labels = cell_groups['cell'].tolist()
+        x_vals = range(len(cell_labels))
+
+        for idx, metric in enumerate(metrics):
+            ax = axes[idx]
+
+            y_vals = cell_groups[metric].values.copy()
+
+            if metric == 'RMSE' and scale_rmse:
+                y_vals = y_vals * 1000
+                ylabel = 'RMSE (x1000)'
+            else:
+                ylabel = metric
+
+            # Bar plot for GCN results
+            bars = ax.bar(x_vals, y_vals, alpha=0.7, edgecolor='black', label='GCN')
+            colors = plt.cm.viridis(np.linspace(0, 1, len(bars)))
+            for bar, color in zip(bars, colors):
+                bar.set_color(color)
+
+            # Value labels on bars
+            for i, y in enumerate(y_vals):
+                ax.text(i, y, f'{y:.3f}', ha='center', va='bottom', fontsize=8, fontweight='bold', rotation=45)
+
+            # MLP baselines as scatter points
+            if include_mlp and mlp_baselines:
+                maml_x, maml_y = [], []
+                aadam_x, aadam_y = [], []
+
+                for i, cell in enumerate(cell_labels):
+                    if cell in mlp_baselines and metric in mlp_baselines[cell]:
+                        if 'maml' in mlp_baselines[cell][metric]:
+                            maml_x.append(i)
+                            maml_y.append(mlp_baselines[cell][metric]['maml'])
+                        if 'aadam' in mlp_baselines[cell][metric]:
+                            aadam_x.append(i)
+                            aadam_y.append(mlp_baselines[cell][metric]['aadam'])
+
+                if maml_y:
+                    ax.scatter(maml_x, maml_y, color='blue', marker='s', s=80,
+                              label=f'MLP MAML', zorder=5, edgecolors='black')
+                if aadam_y:
+                    iter_label = f' (iter={aadam_iter})' if aadam_iter else ''
+                    ax.scatter(aadam_x, aadam_y, color='red', marker='^', s=100,
+                              label=f'MLP Aadam{iter_label}', zorder=5, edgecolors='black')
+
+            ax.set_xticks(x_vals)
+            ax.set_xticklabels(cell_labels, rotation=45, ha='right', fontsize=9)
+            ax.set_xlabel('Cell', fontsize=10)
+            ax.set_ylabel(ylabel, fontsize=11, fontweight='bold')
+            ax.set_title(f'{ylabel} by Cell', fontsize=12)
+            ax.grid(True, alpha=0.3, axis='y')
+            ax.legend(loc='upper right', fontsize=8)
+
+        plt.tight_layout()
+
+        # Save
+        safe_arch = arch.replace('x', '_')
+        filename_parts = [f'arch_{safe_arch}_all_cells']
+        # Add data_type to filename if single type and not 'cell'
+        if 'data_type' in arch_df.columns:
+            data_types = arch_df['data_type'].unique()
+            if len(data_types) == 1 and data_types[0] != 'cell':
+                filename_parts.append(data_types[0])
+        if filter_experiment:
+            filename_parts.append(filter_experiment)
+        if filter_mode:
+            filename_parts.append(filter_mode)
+        if filter_graph_mode:
+            filename_parts.append(filter_graph_mode)
+
+        plot_path = os.path.join(arch_cell_dir, '_'.join(filename_parts) + '.png')
+        plt.savefig(plot_path, dpi=300, bbox_inches='tight')
+        plt.close()
+
+    print(f"Architecture-cell comparison plots saved to: {arch_cell_dir}")
+
+
+def export_results_csv(df, output_file):
+    """Export ASAP7 GCN results to CSV"""
+    cols_order = [
+        'arch_string', 'conv_hidden_dim', 'num_conv_layers', 'fc_hidden_dim', 'num_fc_layers',
+        'experiment', 'cell', 'data_type', 'mode', 'graph_mode', 'pooling', 'model_type', 'is_filtered',
+        'NRMSE', 'RMSE',
+        'num_samples', 'num_groups', 'source_dir', 'filename'
+    ]
+
+    cols_order = [c for c in cols_order if c in df.columns]
+    df_export = df[cols_order].copy()
+
+    metric_cols = ['NRMSE', 'RMSE']
+    for col in metric_cols:
+        if col in df_export.columns:
+            df_export[col] = df_export[col].round(4)
+
+    df_export = df_export.sort_values(['mode', 'graph_mode', 'NRMSE'])
+    df_export.to_csv(output_file, index=False)
+    print(f"Exported: {output_file}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Analyze GCN sweep results for ASAP7 Topology Validation dataset',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Basic analysis
+  python analyze_gcn_sweep_results_asap7.py
+
+  # With specific architecture highlight
+  python analyze_gcn_sweep_results_asap7.py --arch conv64x2_fc128x2
+
+  # Disable MLP baseline comparison
+  python analyze_gcn_sweep_results_asap7.py --no_mlp
+
+  # Filter by experiment type
+  python analyze_gcn_sweep_results_asap7.py --experiment intra_topology
+  python analyze_gcn_sweep_results_asap7.py --experiment topology_agnostic
+
+  # Filter by mode and graph mode
+  python analyze_gcn_sweep_results_asap7.py --mode interpolation --graph_mode full_graph
+
+  # Generate per-cell plots
+  python analyze_gcn_sweep_results_asap7.py --per_cell --scale_rmse
+
+  # Filter by pooling method
+  python analyze_gcn_sweep_results_asap7.py --pooling output
+
+  # Combined filters
+  python analyze_gcn_sweep_results_asap7.py --experiment intra_topology --mode extrapolation --pooling output
+
+  # Use specific AADAM iteration as baseline
+  python analyze_gcn_sweep_results_asap7.py --aadam_iter 300000
+
+  # Analyze only extrapolation regions (left/right)
+  python analyze_gcn_sweep_results_asap7.py --ex_region left_ex --mode extrapolation
+  python analyze_gcn_sweep_results_asap7.py --ex_region right_ex --mode extrapolation
+  python analyze_gcn_sweep_results_asap7.py --ex_region ex_only --mode extrapolation  # both left+right
+        """
+    )
+
+    parser.add_argument('--gcn_dir', type=str,
+                       default='../pretraining/model_test_code/gnn/data_result_npy_directory',
+                       help='Directory containing GCN .npy result files')
+    parser.add_argument('--mlp_dir', type=str,
+                       default='../pretraining/model_test_code/data_result_npy_directory',
+                       help='Directory containing MLP .npy result files')
+    parser.add_argument('--output_dir', type=str, default='./result_summary/gcn_asap7_analysis',
+                       help='Output directory for plots and CSV')
+    parser.add_argument('--subdirs', type=str, nargs='+', default=None,
+                       help='Subdirectories to search')
+    parser.add_argument('--arch', type=str, default=None,
+                       help='Specific architecture to highlight')
+    parser.add_argument('--mode', type=str, default=None,
+                       choices=['interpolation', 'extrapolation'],
+                       help='Filter by mode')
+    parser.add_argument('--graph_mode', type=str, default=None,
+                       choices=['full_graph', 'stage_aware'],
+                       help='Filter by graph mode')
+    parser.add_argument('--experiment', type=str, default=None,
+                       choices=['intra_topology', 'topology_agnostic'],
+                       help='Filter by experiment type')
+    parser.add_argument('--data_type', type=str, default=None,
+                       choices=['cell', 'transition'],
+                       help='Filter by data type (cell delay or transition time)')
+    parser.add_argument('--pooling', type=str, default=None,
+                       choices=['mean', 'max', 'add', 'output'],
+                       help='Filter by pooling method')
+    parser.add_argument('--include_mlp', action='store_true', default=True,
+                       help='Include MLP baselines for comparison (default: True)')
+    parser.add_argument('--no_mlp', action='store_true',
+                       help='Disable MLP baseline comparison')
+    parser.add_argument('--scale_rmse', action='store_true', default=True,
+                       help='Scale RMSE by 1000 (default: True)')
+    parser.add_argument('--no_scale_rmse', action='store_true',
+                       help='Do not scale RMSE by 1000')
+    parser.add_argument('--top_n', type=int, default=15,
+                       help='Number of top architectures to show')
+    parser.add_argument('--per_cell', action='store_true',
+                       help='Generate separate plots for each cell type')
+    parser.add_argument('--aadam_iter', type=int, default=None,
+                       help='Specific iteration for AADAM baseline')
+    parser.add_argument('--arch_cell', action='store_true',
+                       help='Generate architecture-cell comparison plots')
+    parser.add_argument('--ex_region', type=str, default='all',
+                       choices=['all', 'left_ex', 'right_ex', 'ex_only', 'inter'],
+                       help='Filter by extrapolation region: all (default), left_ex (indices 0-4), '
+                            'right_ex (indices 56-60), ex_only (left+right combined), inter (indices 5-55)')
+
+    args = parser.parse_args()
+
+    print("=" * 80)
+    print("ASAP7 GCN ARCHITECTURE SWEEP ANALYSIS")
+    print("=" * 80)
+    print(f"GCN data directory: {args.gcn_dir}")
+    print(f"Output directory: {args.output_dir}")
+    print("Node features: 11D (7 base + 4 process params)")
+    if args.ex_region != 'all':
+        print(f"Extrapolation region filter: {args.ex_region}")
+        if args.ex_region == 'left_ex':
+            print("  -> Analyzing left extrapolation points only (indices 0-4)")
+        elif args.ex_region == 'right_ex':
+            print("  -> Analyzing right extrapolation points only (indices 56-60)")
+        elif args.ex_region == 'ex_only':
+            print("  -> Analyzing both extrapolation regions (left + right)")
+        elif args.ex_region == 'inter':
+            print("  -> Analyzing interpolation points only (indices 5-55)")
+    print()
+
+    # Load ASAP7 GCN results
+    print("Loading ASAP7 GCN results...")
+    gcn_df = load_gcn_asap7_results(args.gcn_dir, subdirs=args.subdirs, ex_region=args.ex_region)
+
+    if gcn_df is None or len(gcn_df) == 0:
+        print("No ASAP7 GCN results found.")
+        return 1
+
+    print(f"Loaded {len(gcn_df)} ASAP7 GCN result files")
+    print(f"Unique architectures: {gcn_df['arch_string'].nunique()}")
+
+    # Apply pooling filter if specified
+    if args.pooling:
+        gcn_df = gcn_df[gcn_df['pooling'] == args.pooling]
+        print(f"Filtered to {len(gcn_df)} results with pooling='{args.pooling}'")
+
+    # Apply data_type filter if specified
+    if args.data_type:
+        gcn_df = gcn_df[gcn_df['data_type'] == args.data_type]
+        print(f"Filtered to {len(gcn_df)} results with data_type='{args.data_type}'")
+
+    # Show available data_types and warn if mixed
+    if 'data_type' in gcn_df.columns:
+        data_types = gcn_df['data_type'].unique().tolist()
+        print(f"Data types: {data_types}")
+        if len(data_types) > 1 and args.data_type is None:
+            print("⚠️  WARNING: Multiple data types found (cell, transition)!")
+            print("   Use --data_type cell or --data_type transition to analyze separately.")
+
+    # Show available experiments
+    if 'experiment' in gcn_df.columns:
+        print(f"Experiments: {gcn_df['experiment'].unique().tolist()}")
+    print()
+
+    # Load MLP results for baseline comparison
+    mlp_df = None
+    include_mlp = args.include_mlp and not args.no_mlp
+    scale_rmse = args.scale_rmse and not args.no_scale_rmse
+    if include_mlp:
+        print("Loading MLP results for baseline comparison...")
+        mlp_df = load_mlp_results(args.mlp_dir, ex_region=args.ex_region)
+        if mlp_df is not None:
+            print(f"Loaded {len(mlp_df)} MLP result files")
+            if 'model_type' in mlp_df.columns:
+                model_types = mlp_df['model_type'].unique()
+                print(f"  Model types found: {', '.join(model_types)}")
+            aadam_df = mlp_df[mlp_df['model_type'] == 'AADAM']
+            if len(aadam_df) > 0 and 'iterations' in aadam_df.columns:
+                aadam_iters = sorted(aadam_df['iterations'].unique())
+                print(f"  AADAM iterations available: {aadam_iters}")
+        else:
+            print("No MLP results found - baseline will not be shown")
+        print()
+
+    # Create output directory
+    output_dir = args.output_dir
+    if args.pooling and args.pooling != 'mean':
+        output_dir = f"{args.output_dir}_pool{args.pooling}"
+    if args.ex_region != 'all':
+        output_dir = f"{output_dir}_{args.ex_region}"
+    os.makedirs(output_dir, exist_ok=True)
+
+    # Generate plots
+    print("Generating plots...")
+    if args.aadam_iter:
+        print(f"Using AADAM iteration: {args.aadam_iter}")
+
+    # Multi-metric comparison
+    plot_multi_metric_comparison(
+        gcn_df, output_dir,
+        filter_mode=args.mode, filter_graph_mode=args.graph_mode,
+        filter_experiment=args.experiment,
+        include_mlp=include_mlp, mlp_df=mlp_df,
+        scale_rmse=scale_rmse, top_n=args.top_n, aadam_iter=args.aadam_iter
+    )
+
+    # Generate for each experiment/mode/graph_mode combination if no filters
+    if args.mode is None and args.graph_mode is None and args.experiment is None:
+        for experiment in gcn_df['experiment'].dropna().unique():
+            for mode in gcn_df['mode'].dropna().unique():
+                for graph_mode in gcn_df['graph_mode'].dropna().unique():
+                    plot_multi_metric_comparison(
+                        gcn_df, output_dir,
+                        filter_mode=mode, filter_graph_mode=graph_mode,
+                        filter_experiment=experiment,
+                        include_mlp=include_mlp, mlp_df=mlp_df,
+                        scale_rmse=scale_rmse, top_n=args.top_n, aadam_iter=args.aadam_iter
+                    )
+
+    # Specific architecture analysis
+    if args.arch:
+        plot_selected_architecture(
+            gcn_df, output_dir, args.arch,
+            include_mlp=include_mlp, mlp_df=mlp_df,
+            scale_rmse=scale_rmse, aadam_iter=args.aadam_iter
+        )
+
+    # Per-cell analysis
+    if args.per_cell:
+        plot_per_cell_comparison(
+            gcn_df, output_dir,
+            include_mlp=include_mlp, mlp_df=mlp_df,
+            scale_rmse=scale_rmse, top_n=args.top_n, aadam_iter=args.aadam_iter
+        )
+
+    # Architecture-cell comparison (all cells per architecture)
+    if args.arch_cell:
+        plot_arch_all_cells_comparison(
+            gcn_df, output_dir,
+            include_mlp=include_mlp, mlp_df=mlp_df,
+            scale_rmse=scale_rmse, aadam_iter=args.aadam_iter,
+            filter_mode=args.mode, filter_graph_mode=args.graph_mode,
+            filter_experiment=args.experiment
+        )
+
+    # Export CSV
+    print("\nExporting results to CSV...")
+    csv_path = os.path.join(output_dir, 'asap7_gcn_results_summary.csv')
+    export_results_csv(gcn_df, csv_path)
+
+    # Print summary
+    print("\n" + "=" * 80)
+    print("SUMMARY")
+    print("=" * 80)
+
+    print("\nTop 5 Architectures by NRMSE (all data):")
+    best_by_nrmse = gcn_df.groupby('arch_string')['NRMSE'].mean().sort_values().head(5)
+    for arch, nrmse in best_by_nrmse.items():
+        print(f"  {arch}: {nrmse:.3f}%")
+
+    print("\nTop 5 Architectures by RMSE (all data):")
+    best_by_rmse = gcn_df.groupby('arch_string')['RMSE'].mean().sort_values().head(5)
+    for arch, rmse in best_by_rmse.items():
+        if scale_rmse:
+            print(f"  {arch}: {rmse*1000:.3f} (x1000)")
+        else:
+            print(f"  {arch}: {rmse:.6f}")
+
+    print("\n" + "=" * 80)
+    print("Analysis complete!")
+    print(f"Results saved to: {output_dir}")
+    print("=" * 80)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

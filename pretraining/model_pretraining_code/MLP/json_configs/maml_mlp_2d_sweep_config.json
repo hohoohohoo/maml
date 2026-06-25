@@ -1,0 +1,21 @@
+{
+  "experiment_name": "maml_mlp_2d_vt_sweep",
+  "description": "MAML MLP 2-D V×T sweep — TSMC intra (config 4) or agnostic (config 5)",
+  "base_config": {
+    "dataset_config": 4,
+    "gpu": "0",
+    "num_iterations": 300000,
+    "inner": 1,
+    "layer_length": 40,
+    "auto_resume": false
+  },
+  "sweep_params": {
+    "data_type": ["cell"],
+    "meta": [32],
+    "innerdiv": [100]
+  },
+  "loss_logging": {
+    "enabled": true,
+    "log_every": 1000
+  }
+}

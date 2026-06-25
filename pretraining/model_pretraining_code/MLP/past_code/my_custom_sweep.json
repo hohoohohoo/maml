@@ -1,0 +1,24 @@
+{
+  "experiment_name": "my_custom_sweep",
+  "description": "My custom parameter sweep",
+  "base_config": {
+    "dataset_config": 0,
+    "data_type": "cell",
+    "gpu": "0",
+    "num_iterations": 50000
+  },
+  "sweep_params": {
+    "layer_length": {
+      "min": 40,
+      "max": 200,
+      "step": 40
+    },
+    "inner": [1, 2],
+    "innerdiv": {
+      "min": 50,
+      "max": 150,
+      "step": 50
+    },
+    "meta": [32, 64]
+  }
+}

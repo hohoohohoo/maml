@@ -8,10 +8,47 @@ import torch.nn.functional as F
 from torch_geometric.data import Data, Batch
 
 
+def _make_train_criterion(asym_alpha=None, pinball_tau=None):
+    """Build the inner-loop training criterion.
+
+    Three modes (asym_alpha / pinball_tau are mutually exclusive, pinball wins if both set):
+
+    1) asym_alpha in (0, 1) — Asymmetric MSE (expectile-like, smooth quadratic).
+       = 0.5 / None → standard MSE.
+       > 0.5 → biased toward over-estimate (safe direction for STA delay).
+       Normalized by 2*a*(1-a) so magnitude matches MSE at a=0.5 — lr/wd stay tuned.
+
+    2) pinball_tau in (0, 1) — Pinball / quantile loss (linear, classic L1-asym).
+       = 0.5 → equivalent to L1 / MAE.
+       > 0.5 → minimizer is the tau-quantile of y → ~tau fraction of preds end up ≥ target.
+       loss = (tau * relu(target - pred) + (1 - tau) * relu(pred - target)).mean()
+
+    3) Both None → standard MSE.
+    """
+    if pinball_tau is not None:
+        t = float(pinball_tau)
+        def pinball(pred, target):
+            err = target - pred                  # +ve = under-pred
+            return (t * F.relu(err) + (1.0 - t) * F.relu(-err)).mean()
+        return pinball
+    if asym_alpha is None or float(asym_alpha) == 0.5:
+        return nn.MSELoss()
+    a = float(asym_alpha)
+    norm = 2.0 * a * (1.0 - a)
+    def asym_mse(pred, target):
+        diff = pred - target
+        w = torch.where(diff < 0,
+                        torch.full_like(diff, a),
+                        torch.full_like(diff, 1.0 - a))
+        return (w * diff.pow(2)).mean() / norm
+    return asym_mse
+
+
 def model_functions_at_training_gnn(initial_model, X_samples, y, true_samples, true_function,
                                    topology_cache, cache_type, norm_stats, normalize_fn,
                                    optim=torch.optim.SGD, lr=0.003, adam_step=0, std=1, mean=10, move=0,
-                                   left_bound=5, right_bound=56, total_points=61, mode='extrapolation'):
+                                   left_bound=5, right_bound=56, total_points=61, mode='extrapolation',
+                                   asym_alpha=None, pinball_tau=None, inner_adam_lr=3e-4):
     """
     Trains the GNN model on X_samples, y and measures the loss curve.
     For each n in sampled_steps, records model(x_axis) after n gradient updates.
@@ -101,7 +138,8 @@ def model_functions_at_training_gnn(initial_model, X_samples, y, true_samples, t
         ).to(device)
     model.load_state_dict(initial_model.state_dict())
 
-    criterion = nn.MSELoss()
+    criterion = nn.MSELoss()                       # for eval / metric reporting (fair comparison)
+    train_criterion = _make_train_criterion(asym_alpha, pinball_tau)  # for inner-loop training only
     optimiser = optim(model.parameters(), lr, weight_decay=1e-4)
     adam_condition_triggered = False
 
@@ -164,14 +202,14 @@ def model_functions_at_training_gnn(initial_model, X_samples, y, true_samples, t
         support_batch_data.append(data)
 
     X_batch = Batch.from_data_list(support_batch_data).to(device)
-    loss = criterion(model(X_batch), y) / K
+    loss = train_criterion(model(X_batch), y) / K
 
     # Adam training if SGD loss is still high
     if loss > 1e-4:
         adam_condition_triggered = True
-        optimiser2 = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
+        optimiser2 = torch.optim.Adam(model.parameters(), lr=inner_adam_lr, weight_decay=1e-4)
         for step in range(1, adam_step+1):
-            loss = criterion(model(X_batch), y) / K
+            loss = train_criterion(model(X_batch), y) / K
             losses.append(loss.item())
 
             # compute grad and update inner loop weights
@@ -226,11 +264,181 @@ def model_functions_at_training_gnn(initial_model, X_samples, y, true_samples, t
             adam_condition_triggered, avg_total_rmse)
 
 
+def adapt_bilinear_residual_gnn(
+    initial_model, X_samples, y, true_samples, true_function,
+    topology_cache, cache_type, total_points,
+):
+    """
+    Adaptation = bilinear surface prior (from 4 V×T corner support outputs)
+                 + scalar residual rescaling (from 1 center support point).
+
+    No model weight updates. Designed for 2-D V×T validation where support
+    is exactly 4 corners + 1 center; each X_sample must carry
+    'voltage_idx' / 'temp_idx' from CellTestDataset2D.
+
+    Final prediction at any (V, T):
+        pred(V, T) = data_prior(V, T) + alpha * (m_raw(V, T) - model_prior(V, T))
+
+    where
+        data_prior  : bilinear interp through the 4 corner y values
+        model_prior : bilinear interp through the model's raw outputs at the 4 corners
+        alpha       : data_resid_at_center / model_resid_at_center
+
+    Returns the same 7-tuple shape as the other branches of
+    evaluate_model_performance_gnn so the validation caller is unchanged.
+    """
+    import math
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = initial_model
+    model.eval()
+
+    # Build PyG Data from a minimal sample (mirrors create_pyg_data inside training fn)
+    def make_data(sample):
+        node_features = sample['node_features']
+        cell_name = sample['cell_name']
+        cell_cache = topology_cache[cell_name]
+        if cache_type == 'stage_aware':
+            output_name = sample['output_name']
+            delay_type = sample['delay_type']
+            output_topo = cell_cache['output_topologies'][output_name]
+            adj = (output_topo['pull_up']['adjacency_matrix']
+                   if 'rise' in delay_type
+                   else output_topo['pull_down']['adjacency_matrix'])
+        else:
+            adj = cell_cache['adjacency_matrix']
+        edge_index = adj.nonzero().t()
+        return Data(x=node_features, edge_index=edge_index)
+
+    # --- Classify support into 4 corners + 1 center ---
+    if not all('voltage_idx' in s and 'temp_idx' in s for s in X_samples):
+        raise ValueError(
+            "bilinear_residual adaptation requires X_samples to carry "
+            "'voltage_idx' and 'temp_idx' (use CellTestDataset2D)."
+        )
+    vs = [s['voltage_idx'] for s in X_samples]
+    ts = [s['temp_idx'] for s in X_samples]
+    v_min, v_max = min(vs), max(vs)
+    t_min, t_max = min(ts), max(ts)
+    if v_min == v_max or t_min == t_max:
+        raise ValueError(
+            "bilinear_residual needs support points spanning both V and T axes."
+        )
+
+    y_corner = {}            # (v_id, t_id) -> y value
+    corner_pos = {}          # (v_id, t_id) -> index in X_samples
+    center_idx = None
+    center_v = center_t = None
+    for i, s in enumerate(X_samples):
+        v, t = int(s['voltage_idx']), int(s['temp_idx'])
+        is_corner = v in (v_min, v_max) and t in (t_min, t_max)
+        key = (v, t)
+        if is_corner and key not in y_corner:
+            y_corner[key] = float(y[i].item())
+            corner_pos[key] = i
+        elif center_idx is None:
+            center_idx = i
+            center_v, center_t = v, t
+
+    if len(y_corner) != 4:
+        raise ValueError(
+            f"bilinear_residual needs exactly 4 distinct V×T corners in support; "
+            f"got {len(y_corner)} ({list(y_corner.keys())})."
+        )
+    if center_idx is None:
+        raise ValueError(
+            "bilinear_residual needs at least one non-corner support point as center."
+        )
+
+    y_00 = y_corner[(v_min, t_min)]
+    y_01 = y_corner[(v_min, t_max)]
+    y_10 = y_corner[(v_max, t_min)]
+    y_11 = y_corner[(v_max, t_max)]
+    dv = float(v_max - v_min)
+    dt = float(t_max - t_min)
+
+    def bilinear(v, t, y00, y01, y10, y11):
+        vn = (v - v_min) / dv
+        tn = (t - t_min) / dt
+        return ((1 - vn) * (1 - tn) * y00
+                + (1 - vn) * tn * y01
+                + vn * (1 - tn) * y10
+                + vn * tn * y11)
+
+    # --- Model raw outputs at the 4 corners and center ---
+    with torch.no_grad():
+        m_at = {}
+        for key, idx in corner_pos.items():
+            batch = Batch.from_data_list([make_data(X_samples[idx])]).to(device)
+            m_at[key] = float(model(batch).item())
+        c_batch = Batch.from_data_list([make_data(X_samples[center_idx])]).to(device)
+        m_center = float(model(c_batch).item())
+
+    m_00 = m_at[(v_min, t_min)]
+    m_01 = m_at[(v_min, t_max)]
+    m_10 = m_at[(v_max, t_min)]
+    m_11 = m_at[(v_max, t_max)]
+
+    # --- alpha (residual rescaling) ---
+    data_prior_center  = bilinear(center_v, center_t, y_00, y_01, y_10, y_11)
+    model_prior_center = bilinear(center_v, center_t, m_00, m_01, m_10, m_11)
+    data_resid_center  = float(y[center_idx].item()) - data_prior_center
+    model_resid_center = m_center - model_prior_center
+
+    EPS = 1e-8
+    alpha = 0.0 if abs(model_resid_center) < EPS \
+            else data_resid_center / model_resid_center
+
+    # --- Predict every (V, T) sample ---
+    predictions = []
+    actual_values = []
+    total_loss = 0.0
+    total_mape = 0.0
+    total_sse = 0.0
+    with torch.no_grad():
+        for i in range(total_points):
+            s = true_samples[i]
+            v = int(s['voltage_idx'])
+            t = int(s['temp_idx'])
+            batch = Batch.from_data_list([make_data(s)]).to(device)
+            m_raw = float(model(batch).item())
+
+            data_prior  = bilinear(v, t, y_00, y_01, y_10, y_11)
+            model_prior = bilinear(v, t, m_00, m_01, m_10, m_11)
+            pred = data_prior + alpha * (m_raw - model_prior)
+
+            actual = float(true_function[i].item())
+            predictions.append(pred)
+            actual_values.append(actual)
+
+            err = pred - actual
+            total_sse += err * err
+            total_loss += err * err   # MSE-style accumulator
+            if abs(actual) > 1e-8:
+                total_mape += abs(err / actual)
+
+    avg_loss = total_loss / total_points
+    avg_mape = total_mape / total_points
+    avg_rmse = math.sqrt(total_sse / total_points)
+
+    # Wrap loss as a tensor so callers that use tensor math (** 0.5, isinf, isnan)
+    # behave identically to the selective_adam branch.
+    return (
+        torch.tensor(avg_loss, dtype=torch.float32),
+        avg_mape,
+        predictions,
+        actual_values,
+        model,
+        False,         # adam_used = False (no weight updates)
+        avg_rmse,
+    )
+
+
 def evaluate_model_performance_gnn(initial_model, model_name, X_samples, y, true_samples, true_function,
                                    grad, move, topology_cache, cache_type, norm_stats, normalize_fn,
                                    optim=torch.optim.SGD, lr=0.001,
                                    left_bound=5, right_bound=56, total_points=61, mode='extrapolation',
-                                   adaptation_method='selective_adam'):
+                                   adaptation_method='selective_adam', asym_alpha=None, safe_eps=None,
+                                   pinball_tau=None, inner_adam_lr=3e-4):
     """
     Evaluate GNN model performance with grad/move normalization parameters
 
@@ -260,6 +468,19 @@ def evaluate_model_performance_gnn(initial_model, model_name, X_samples, y, true
     """
     import numpy as np
 
+    # Bilinear-prior + residual scaling (2-D V×T). No weight updates.
+    if adaptation_method == 'bilinear_residual':
+        return adapt_bilinear_residual_gnn(
+            initial_model=initial_model,
+            X_samples=X_samples,
+            y=y,
+            true_samples=true_samples,
+            true_function=true_function,
+            topology_cache=topology_cache,
+            cache_type=cache_type,
+            total_points=total_points,
+        )
+
     # If using 'adam' method, use direct Adam without grad/move scaling
     if adaptation_method == 'adam':
         result = model_functions_with_optim_mode_gnn(
@@ -282,7 +503,10 @@ def evaluate_model_performance_gnn(initial_model, model_name, X_samples, y, true
             left_bound=left_bound,
             right_bound=right_bound,
             total_points=total_points,
-            mode=mode
+            mode=mode,
+            asym_alpha=asym_alpha,
+            pinball_tau=pinball_tau,
+            inner_adam_lr=inner_adam_lr,
         )
 
         return (result['total_loss'], result['total_mape'],
@@ -308,6 +532,15 @@ def evaluate_model_performance_gnn(initial_model, model_name, X_samples, y, true
             y_test = (y-y_mean1) / y_std1 + move
             true_function1 = (true_function-y_mean1) / y_std1 + move
 
+            # Safe-margin shift: nudge ONLY the support-training target up by safe_eps
+            # (in normalized units). The model fits this shifted target during inner-loop
+            # adaptation, so its predictions for unseen test points end up shifted up by
+            # roughly safe_eps * y_std1 in raw units — biasing toward over-estimate
+            # (the safe direction for STA delay). true_function1 stays unshifted so the
+            # reported actual_values / NRMSE compare against the true ground truth.
+            if safe_eps is not None and safe_eps != 0:
+                y_test = y_test + safe_eps
+
             # Pass the updated mean and std to model_functions_at_training
             (model, outputs, losses, total_loss, total_mape_loss, predictions, actual_values,
              adam_condition_triggered, avg_total_rmse) = model_functions_at_training_gnn(
@@ -329,7 +562,10 @@ def evaluate_model_performance_gnn(initial_model, model_name, X_samples, y, true
                 left_bound=left_bound,
                 right_bound=right_bound,
                 total_points=total_points,
-                mode=mode
+                mode=mode,
+                asym_alpha=asym_alpha,
+                pinball_tau=pinball_tau,
+                inner_adam_lr=inner_adam_lr,
             )
             adam_used = adam_condition_triggered
 
@@ -349,7 +585,8 @@ def model_functions_with_optim_mode_gnn(initial_model, X_samples, y, true_sample
                                         topology_cache, cache_type, norm_stats, normalize_fn,
                                         optim_mode='selective_adam', num_steps=50, lr=0.003,
                                         std=1, mean=10, move=0, grad=1,
-                                        left_bound=5, right_bound=56, total_points=61, mode='extrapolation'):
+                                        left_bound=5, right_bound=56, total_points=61, mode='extrapolation',
+                                        asym_alpha=None, pinball_tau=None, inner_adam_lr=3e-4):
     """
     Train GNN model with different optimization modes for comparison.
 
@@ -425,7 +662,8 @@ def model_functions_with_optim_mode_gnn(initial_model, X_samples, y, true_sample
         ).to(device)
     model.load_state_dict(initial_model.state_dict())
 
-    criterion = nn.MSELoss()
+    criterion = nn.MSELoss()                       # for eval / metric reporting
+    train_criterion = _make_train_criterion(asym_alpha, pinball_tau)  # for inner-loop training only
 
     def create_pyg_data(minimal_sample):
         node_features = minimal_sample['node_features']
@@ -462,7 +700,7 @@ def model_functions_with_optim_mode_gnn(initial_model, X_samples, y, true_sample
         y_std_local = y_tensor.std() + 1e-8
         y_train = (y_tensor - y_mean_local) / y_std_local
 
-    initial_loss = criterion(model(X_batch), y_train) / K
+    initial_loss = train_criterion(model(X_batch), y_train) / K
     losses.append(initial_loss.item())
 
     # Apply optimization
@@ -472,16 +710,16 @@ def model_functions_with_optim_mode_gnn(initial_model, X_samples, y, true_sample
     elif optim_mode == 'sgd':
         optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=1e-4)
         for step in range(num_steps):
-            loss = criterion(model(X_batch), y_train) / K
+            loss = train_criterion(model(X_batch), y_train) / K
             losses.append(loss.item())
             model.zero_grad()
             loss.backward()
             optimizer.step()
 
     elif optim_mode == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
+        optimizer = torch.optim.Adam(model.parameters(), lr=inner_adam_lr, weight_decay=1e-4)
         for step in range(num_steps):
-            loss = criterion(model(X_batch), y_train) / K
+            loss = train_criterion(model(X_batch), y_train) / K
             losses.append(loss.item())
             model.zero_grad()
             loss.backward()
@@ -489,9 +727,9 @@ def model_functions_with_optim_mode_gnn(initial_model, X_samples, y, true_sample
 
     elif optim_mode == 'selective_adam':
         if initial_loss > 1e-4:
-            optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
+            optimizer = torch.optim.Adam(model.parameters(), lr=inner_adam_lr, weight_decay=1e-4)
             for step in range(num_steps):
-                loss = criterion(model(X_batch), y_train) / K
+                loss = train_criterion(model(X_batch), y_train) / K
                 losses.append(loss.item())
                 model.zero_grad()
                 loss.backward()

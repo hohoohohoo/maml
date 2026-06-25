@@ -1,0 +1,96 @@
+================================================================================
+ASAP7 2-D Dataset Build — Copy-Paste Commands
+================================================================================
+Builder file : build_gnn_dataset_process_cached_asap7_2d.py
+Each block below is a SINGLE LINE. Copy the entire block, paste into terminal.
+
+Bug fix history:
+  - 2026-06-04: corner key now `{prefix}_{a}_{b}_{c}` so invbuf and simple are
+                independent corners (was grouping both under same (a,b,c) → 12/6
+                temps "incomplete" skip).
+
+--------------------------------------------------------------------------------
+[STEP 0] (optional) Verify the source paths exist
+--------------------------------------------------------------------------------
+ls /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_asap7sc7p5t_28_L.pth /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/processed /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/processed_simple /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/test_processed /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/test_processed_simple
+
+
+--------------------------------------------------------------------------------
+[STEP 1] (only if a previous wrong run is still alive) Kill it. Replace PID.
+--------------------------------------------------------------------------------
+kill <PID>
+
+
+--------------------------------------------------------------------------------
+[STEP 2] BUILD — invbuf + simple, 10% sampling, test cap 2000 (MAIN)
+--------------------------------------------------------------------------------
+cd /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn && nohup python -u build_gnn_dataset_process_cached_asap7_2d.py --cache_path /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_asap7sc7p5t_28_L.pth --cache_type stage_aware --lib_base_paths /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/processed /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/processed_simple --test_lib_base_paths /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/test_processed /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/test_processed_simple --output_dir /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/gnn_dataset_asap7_2d --prefixes invbuf simple --data_type cell --sampling_ratio 0.10 --max_test_tasks_per_cell 2000 > /tmp/asap7_2d_build.log 2>&1 & echo "PID: $!"
+
+
+--------------------------------------------------------------------------------
+[STEP 3a] Live monitor (Ctrl+C to exit)
+--------------------------------------------------------------------------------
+tail -f /tmp/asap7_2d_build.log
+
+
+--------------------------------------------------------------------------------
+[STEP 3b] Quick progress check
+--------------------------------------------------------------------------------
+grep -E "Discovered|Corner [0-9]+/128|tasks collected|Saved|✅|Done|ERROR|Traceback" /tmp/asap7_2d_build.log | tail -25
+
+
+--------------------------------------------------------------------------------
+[STEP 4] After build finishes — verify train + test outputs
+--------------------------------------------------------------------------------
+cd /home/tkdgn2907/Deepsets_test/MAML && python -c "import torch, glob, os; d=torch.load('Projects/dataset_all/gnn_dataset_asap7_2d/train_cell_stage_aware_samp10pct_2d.pth', weights_only=False, map_location='cpu', mmap=True); print('=== TRAIN ==='); print('format:', d['format']); print('process_node:', d['process_node']); print('node_features.shape:', tuple(d['node_features'].shape)); print('outputs.shape:', tuple(d['outputs'].shape)); print('num_tasks:', d['num_tasks']); print('num_voltages:', d['num_voltages']); print('num_temps:', d['num_temps']); print('voltages range:', f\"{d['voltages'].min().item():.3f} -> {d['voltages'].max().item():.3f}\"); print('temperatures:', d['temperatures'].tolist()); print('sampling_ratio:', d['sampling_ratio']); print('unique corners:', len(set(d['task_corners']))); print('unique cells:', len(set(d['cell_names']))); print('cell sample:', sorted(set(d['cell_names']))[:10]); print('norm_stats:', d['norm_stats']); test_files=sorted(glob.glob('Projects/dataset_all/gnn_dataset_asap7_2d/test_by_cell_stage_aware_2d/*.pth')); print(); print('=== TEST ==='); print('# test cell files:', len(test_files)); [print(f'  {os.path.basename(f):35s} shape={tuple(torch.load(f, weights_only=False, map_location=\"cpu\")[\"node_features\"].shape)} tasks={torch.load(f, weights_only=False, map_location=\"cpu\")[\"num_tasks\"]}') for f in test_files[:8]]"
+
+
+================================================================================
+EXPECTED RESULTS
+================================================================================
+Discovered train folders : 768                    (= 64 invbuf + 64 simple, × 6 temps)
+Discovered test  folders : 270                    (= 27 invbuf + 27 simple, × 5 temps)
+Corner counter           : [Corner X/128] ...    (= 64 invbuf + 64 simple)
+
+After build:
+  format               : unified_4d_VT
+  process_node         : ASAP7
+  node_features.shape  : (61, 6, ~3M-5M, 11)
+  voltages range       : 0.400 -> 1.000
+  temperatures         : [-25.0, 12.5, 37.5, 62.5, 87.5, 125.0]
+  num_tasks            : ~50,000 - 100,000  (10% applied)
+  unique corners       : 128                  (= 64 invbuf + 64 simple)
+  test cell num_tasks  : <= 2000              (cap applied)
+
+
+================================================================================
+NOTE ON 128 CORNERS (kept by design)
+================================================================================
+`invbuf_a_b_c` and `simple_a_b_c` describe cells from two different families at
+the *same* physical process corner (a, b, c). In this build they are stored as
+two independent corner labels (128 total) — this is correct for training and
+validation (model behavior is identical to merging them), and any per-corner
+analysis can group `invbuf_*` and `simple_*` afterwards if needed.
+
+
+================================================================================
+FALLBACK: build with invbuf only (skip simple)
+================================================================================
+cd /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn && nohup python -u build_gnn_dataset_process_cached_asap7_2d.py --cache_path /home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_asap7sc7p5t_28_L.pth --cache_type stage_aware --lib_base_paths /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/processed --test_lib_base_paths /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/ASAP7_lib_files/test_processed --output_dir /home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/gnn_dataset_asap7_2d --prefixes invbuf --data_type cell --sampling_ratio 0.10 --max_test_tasks_per_cell 2000 > /tmp/asap7_2d_build.log 2>&1 & echo "PID: $!"
+
+
+================================================================================
+TROUBLESHOOTING
+================================================================================
+• "Discovered train folders: 0"
+    → check --lib_base_paths and --prefixes; the folder name pattern is
+      `{prefix}_{a}_{b}_{c}_{temp}` (e.g. invbuf_0_0_0_-25 / simple_2_3_1_125)
+• "incomplete: 12/6 temps, skipping" on every corner
+    → builder fix not applied; pull the latest
+      build_gnn_dataset_process_cached_asap7_2d.py from this repo.
+• Build appears stuck before [Corner 1/128]
+    → topology cache load takes ~1 min for asap7 (164 cells). Be patient.
+• Test partials in .temp_partials/ pile up before merge
+    → expected, they auto-delete after merge.
+• PythonZip/StreamReader error on later mmap load
+    → partial save (interrupted torch.save); restart the build.

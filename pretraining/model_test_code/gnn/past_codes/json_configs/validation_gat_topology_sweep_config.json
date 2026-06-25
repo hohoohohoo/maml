@@ -1,0 +1,50 @@
+{
+  "experiment_name": "gat_validation_topology_sweep",
+  "description": "GAT topology validation sweep for TSMC Process dataset (11D node features: 7 base + 4 process params)",
+  "base_config": {
+    "model_type": "maml",
+    "data_type": "cell",
+    "graph_mode": "stage_aware",
+    "voltage_mode": "all_nodes",
+    "normalization": "zscore",
+    "inputport": false,
+    "related_pin_only": true,
+    "mode": "extrapolation",
+    "total_points": 61,
+    "num_test_samples": 2000,
+    "num_iterations": 300000,
+    "save_results": true,
+    "filter_continuous": true,
+    "continuity_threshold": 0.18,
+    "pooling": "mean",
+    "heads": 4,
+    "adaptation_method": "selective_adam",
+    "output_dir": "test",
+    "gpu": 3
+  },
+  "sweep_params": {
+    "experiment": ["topology_agnostic","intra_topology"],
+    "conv_hidden_dim": [64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [256],
+    "num_fc_layers": [2]
+  },
+  "maml_config": {
+    "innerdiv": 10,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1
+  },
+  "_comments": {
+    "model_type": "GAT (Graph Attention Network) with multi-head attention",
+    "heads_note": "Number of attention heads. conv_hidden_dim should be divisible by heads for efficient computation",
+    "num_fc_layers_note": "GAT supports only 2 or 3 FC layers",
+    "pooling_options": "mean, max, add, output (output-node-only)",
+    "voltage_mode_options": "all_nodes (voltage on all nodes), vdd_only (voltage only on VDD, 0 elsewhere)",
+    "normalization_options": "zscore (z-score normalization, default), minmax (min-max to [epsilon, 1] range)",
+    "output_node_idx_note": "output_node_idx is dynamically determined from topology cache",
+    "adaptation_method_options": "selective_adam (grad/move + conditional Adam), adam (direct Adam, no grad/move)",
+    "output_dir_options": "final (data_result_npy_directory_final), test (data_result_npy_directory for testing)",
+    "inputport_note": "Set 'inputport': true if using inputport topology. Adds _inputport suffix to paths.",
+    "related_pin_only_note": "Set 'related_pin_only': true if using related_pin_only slew assignment. Adds _relpin suffix to paths."
+  }
+}

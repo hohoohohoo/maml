@@ -1,0 +1,34 @@
+========================================================================
+Per-cell task counts for the TSMC test set (verified via
+`num_tasks` field of the per-cell .pth dataset files).
+========================================================================
+
+  topology_agnostic  / cell_delay :  16 cells, mean =  15,435.0 tasks/cell, median =  12,250 tasks/cell, min =  2,940, max =  44,100, total =   246,960
+  topology_agnostic  / transition :  16 cells, mean =  15,435.0 tasks/cell, median =  12,250 tasks/cell, min =  2,940, max =  44,100, total =   246,960
+
+  intra_topology     / cell_delay :  6 cells, mean =  15,516.7 tasks/cell, median =   9,800 tasks/cell, min =  7,350, max =  29,400, total =    93,100
+  intra_topology     / transition :  6 cells, mean =  15,516.7 tasks/cell, median =   9,800 tasks/cell, min =  7,350, max =  29,400, total =    93,100
+
+Per-cell table:
+  topology_agnostic  AO211D0  cell-delay tasks = 19,600, transition tasks = 19,600
+  topology_agnostic  AO211D1  cell-delay tasks = 19,600, transition tasks = 19,600
+  topology_agnostic  AO21D0   cell-delay tasks = 12,250, transition tasks = 12,250
+  topology_agnostic  AO21D1   cell-delay tasks = 12,250, transition tasks = 12,250
+  topology_agnostic  IAO21D0  cell-delay tasks = 12,250, transition tasks = 12,250
+  topology_agnostic  IAO21D1  cell-delay tasks = 12,250, transition tasks = 12,250
+  topology_agnostic  OA211D0  cell-delay tasks = 19,600, transition tasks = 19,600
+  topology_agnostic  OA211D1  cell-delay tasks = 19,600, transition tasks = 19,600
+  topology_agnostic  OA21D0   cell-delay tasks = 12,250, transition tasks = 12,250
+  topology_agnostic  OA21D1   cell-delay tasks = 12,250, transition tasks = 12,250
+  topology_agnostic  IOA21D0  cell-delay tasks = 12,250, transition tasks = 12,250
+  topology_agnostic  IOA21D1  cell-delay tasks = 12,250, transition tasks = 12,250
+  topology_agnostic  FA1D0    cell-delay tasks = 44,100, transition tasks = 44,100
+  topology_agnostic  HA1D0    cell-delay tasks = 14,700, transition tasks = 14,700
+  topology_agnostic  DFCNQD1  cell-delay tasks =  2,940, transition tasks =  2,940
+  topology_agnostic  SDFSNQD0 cell-delay tasks =  8,820, transition tasks =  8,820
+  intra_topology     AN4D0    cell-delay tasks =  9,800, transition tasks =  9,800
+  intra_topology     ND3D0    cell-delay tasks =  7,350, transition tasks =  7,350
+  intra_topology     NR3D1    cell-delay tasks =  7,350, transition tasks =  7,350
+  intra_topology     OR4D0    cell-delay tasks =  9,800, transition tasks =  9,800
+  intra_topology     XNR3D1   cell-delay tasks = 29,400, transition tasks = 29,400
+  intra_topology     XOR3D1   cell-delay tasks = 29,400, transition tasks = 29,400

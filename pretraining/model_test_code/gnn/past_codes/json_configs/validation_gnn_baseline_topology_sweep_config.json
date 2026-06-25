@@ -1,0 +1,32 @@
+{
+  "experiment_name": "gnn_baseline_validation_topology_sweep",
+  "description": "GNN Baseline topology validation sweep for TSMC Process dataset (11D node features)",
+  "base_config": {
+    "model_type": "baseline",
+    "data_type": "cell",
+    "graph_mode": "full_graph",
+    "mode": "extrapolation",
+    "total_points": 61,
+    "num_test_samples": 1000000,
+    "num_iterations": 300000,
+    "save_results": true,
+    "filter_continuous": true,
+    "continuity_threshold": 0.18,
+    "pooling": "mean",
+    "adaptation_method": "selective_adam",
+    "gpu": 1
+  },
+  "sweep_params": {
+    "experiment": ["intra_topology", "topology_agnostic"],
+    "conv_hidden_dim": [64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [256],
+    "num_fc_layers": [2]
+  },
+  "_comments": {
+    "model_type": "baseline - standard mini-batch trained model (NOT MAML)",
+    "model_dir": "pretrained_models/gnn_baseline_tsmc_process_final/",
+    "training_script": "baseline_gnn_training_tsmc_process.py",
+    "adaptation_method_options": "selective_adam (grad/move + conditional Adam), adam (direct Adam, no grad/move)"
+  }
+}

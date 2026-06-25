@@ -1,0 +1,24 @@
+{
+  "experiment_name": "maml_topology_validation_sweep",
+  "description": "MAML topology validation parameter sweep",
+  "base_config": {
+    "inner": 1,
+    "innerdiv": 100,
+    "meta": 32,
+    "num_iterations": 300000,
+    "gpu_id": "4",
+    "num_test_samples": 100000,
+    "save_results": true,
+    "indices": null,
+    "total_points": 61,
+    "adaptation_method": "selective_adam"
+  },
+  "sweep_params": {
+    "config": [1],
+    "mode": ["extrapolation", "interpolation"],
+    "data_type": ["cell","transition"]
+  },
+  "_comments": {
+    "adaptation_method_options": "selective_adam (grad/move + conditional Adam), adam (direct Adam, no grad/move)"
+  }
+}

@@ -1,0 +1,603 @@
+Center Steps/LR Sweep Results
+=============================
+
+----------------------------------------
+center_steps=20, center_lr=1e-4
+----------------------------------------
+OVERALL         1165.034955        106.128315         90.9           % 926.149774        
+OVERALL         12000              11357           94.6           
+OVERALL         397.02          76.01              82.56           250        12000       
+OVERALL         2.250676        0.562463           0.596916       
+  Mean MAPE: 397.02%
+  Median MAPE: 275.21%
+  Mean MAPE: 76.01%
+  Median MAPE: 34.15%
+  Mean MAPE: 82.56%
+  Median MAPE: 35.48%
+OVERALL         74.322703          2.798594           96.2           % 502.273417        
+OVERALL         12000              11295           94.1           
+OVERALL         63.30           56.41              56.55           250        12000       
+OVERALL         0.176772        0.226912           0.225889       
+  Mean MAPE: 63.30%
+  Median MAPE: 31.24%
+  Mean MAPE: 56.41%
+  Median MAPE: 23.47%
+  Mean MAPE: 56.55%
+  Median MAPE: 23.59%
+
+----------------------------------------
+center_steps=20, center_lr=3e-4
+----------------------------------------
+OVERALL         1221.036996        65.665917          94.6           % 2241.149928       
+OVERALL         12000              11825           98.5           
+OVERALL         333.38          115.24             119.69          250        12000       
+OVERALL         1.947469        0.825427           0.848326       
+  Mean MAPE: 333.38%
+  Median MAPE: 227.62%
+  Mean MAPE: 115.24%
+  Median MAPE: 45.68%
+  Mean MAPE: 119.69%
+  Median MAPE: 48.75%
+OVERALL         70.727363          2.076717           97.1           % 519.110526        
+OVERALL         12000              11296           94.1           
+OVERALL         55.01           62.35              62.20           250        12000       
+OVERALL         0.144177        0.229321           0.227583       
+  Mean MAPE: 55.01%
+  Median MAPE: 32.11%
+  Mean MAPE: 62.35%
+  Median MAPE: 26.74%
+  Mean MAPE: 62.20%
+  Median MAPE: 26.89%
+
+----------------------------------------
+center_steps=20, center_lr=1e-3
+----------------------------------------
+OVERALL         1144.738342        28.683920          97.5           % 926.583625        
+OVERALL         12000              11662           97.2           
+OVERALL         181.56          53.04              55.67           250        12000       
+OVERALL         1.064755        0.375117           0.389191       
+  Mean MAPE: 181.56%
+  Median MAPE: 73.74%
+  Mean MAPE: 53.04%
+  Median MAPE: 23.99%
+  Mean MAPE: 55.67%
+  Median MAPE: 24.69%
+OVERALL         74.250112          3.369999           95.5           % 353.436749        
+OVERALL         12000              11309           94.2           
+OVERALL         76.97           52.05              52.55           250        12000       
+OVERALL         0.204258        0.212339           0.212174       
+  Mean MAPE: 76.97%
+  Median MAPE: 54.13%
+  Mean MAPE: 52.05%
+  Median MAPE: 23.16%
+  Mean MAPE: 52.55%
+  Median MAPE: 23.76%
+
+----------------------------------------
+center_steps=20, center_lr=3e-3
+----------------------------------------
+OVERALL         1154.523101        33.935891          97.1           % 635.428094        
+OVERALL         12000              11939           99.5           
+OVERALL         237.59          59.35              62.99           250        12000       
+OVERALL         1.420630        0.429590           0.449815       
+  Mean MAPE: 237.59%
+  Median MAPE: 162.69%
+  Mean MAPE: 59.35%
+  Median MAPE: 26.45%
+  Mean MAPE: 62.99%
+  Median MAPE: 27.25%
+OVERALL         76.268615          36.542814          52.1           % 428.144244        
+OVERALL         12000              11908           99.2           
+OVERALL         272.74          48.54              53.11           250        12000       
+OVERALL         0.710024        0.207644           0.217897       
+  Mean MAPE: 272.74%
+  Median MAPE: 219.88%
+  Mean MAPE: 48.54%
+  Median MAPE: 21.76%
+  Mean MAPE: 53.11%
+  Median MAPE: 22.46%
+
+----------------------------------------
+center_steps=20, center_lr=1e-2
+----------------------------------------
+OVERALL         1183.388212        10.889451          99.1           % 58.778832         
+OVERALL         12000              12000           100.0          
+OVERALL         118.54          24.38              26.31           250        12000       
+OVERALL         0.700732        0.187992           0.198456       
+  Mean MAPE: 118.54%
+  Median MAPE: 84.10%
+  Mean MAPE: 24.38%
+  Median MAPE: 13.24%
+  Mean MAPE: 26.31%
+  Median MAPE: 13.59%
+OVERALL         73.352641          11.900428          83.8           % 349.945462        
+OVERALL         12000              12000           100.0          
+OVERALL         141.54          42.25              44.28           250        12000       
+OVERALL         0.383451        0.175860           0.180097       
+  Mean MAPE: 141.54%
+  Median MAPE: 90.68%
+  Mean MAPE: 42.25%
+  Median MAPE: 17.95%
+  Mean MAPE: 44.28%
+  Median MAPE: 18.54%
+
+----------------------------------------
+center_steps=40, center_lr=1e-4
+----------------------------------------
+OVERALL         1098.303648        4.587837           99.6           % 1313.536883       
+OVERALL         12000              11648           97.1           
+OVERALL         82.15           83.89              83.85           250        12000       
+OVERALL         0.487267        0.597173           0.594930       
+  Mean MAPE: 82.15%
+  Median MAPE: 55.93%
+  Mean MAPE: 83.89%
+  Median MAPE: 34.90%
+  Mean MAPE: 83.85%
+  Median MAPE: 35.67%
+OVERALL         74.130736          0.528683           99.3           % 553.860754        
+OVERALL         12000              11067           92.2           
+OVERALL         26.02           61.47              60.75           250        12000       
+OVERALL         0.074760        0.230166           0.226995       
+  Mean MAPE: 26.02%
+  Median MAPE: 12.85%
+  Mean MAPE: 61.47%
+  Median MAPE: 24.45%
+  Mean MAPE: 60.75%
+  Median MAPE: 24.04%
+
+----------------------------------------
+center_steps=40, center_lr=3e-4
+----------------------------------------
+OVERALL         1199.587869        6.486703           99.5           % 1075.564352       
+OVERALL         12000              11584           96.5           
+OVERALL         106.80          70.91              71.65           250        12000       
+OVERALL         0.629470        0.508172           0.510648       
+  Mean MAPE: 106.80%
+  Median MAPE: 72.16%
+  Mean MAPE: 70.91%
+  Median MAPE: 29.39%
+  Mean MAPE: 71.65%
+  Median MAPE: 30.14%
+OVERALL         71.660685          0.536654           99.3           % 550.697595        
+OVERALL         12000              11146           92.9           
+OVERALL         23.78           64.40              63.57           250        12000       
+OVERALL         0.066859        0.256676           0.252802       
+  Mean MAPE: 23.78%
+  Median MAPE: 13.17%
+  Mean MAPE: 64.40%
+  Median MAPE: 28.09%
+  Mean MAPE: 63.57%
+  Median MAPE: 27.69%
+
+----------------------------------------
+center_steps=40, center_lr=1e-3
+----------------------------------------
+OVERALL         1232.447194        4.447352           99.6           % 808.353829        
+OVERALL         12000              11767           98.1           
+OVERALL         88.31           63.51              64.02           250        12000       
+OVERALL         0.565663        0.475564           0.477403       
+  Mean MAPE: 88.31%
+  Median MAPE: 55.51%
+  Mean MAPE: 63.51%
+  Median MAPE: 28.07%
+  Mean MAPE: 64.02%
+  Median MAPE: 28.80%
+OVERALL         72.497168          0.648406           99.1           % 589.730041        
+OVERALL         12000              11362           94.7           
+OVERALL         25.27           59.27              58.58           250        12000       
+OVERALL         0.066847        0.208901           0.206002       
+  Mean MAPE: 25.27%
+  Median MAPE: 14.45%
+  Mean MAPE: 59.27%
+  Median MAPE: 24.55%
+  Mean MAPE: 58.58%
+  Median MAPE: 24.17%
+
+----------------------------------------
+center_steps=40, center_lr=3e-3
+----------------------------------------
+OVERALL         1200.863851        1.395249           99.9           % 323.412493        
+OVERALL         12000              11945           99.5           
+OVERALL         44.73           43.86              43.88           250        12000       
+OVERALL         0.267688        0.294126           0.293586       
+  Mean MAPE: 44.73%
+  Median MAPE: 27.11%
+  Mean MAPE: 43.86%
+  Median MAPE: 21.96%
+  Mean MAPE: 43.88%
+  Median MAPE: 22.06%
+OVERALL         72.426036          1.871072           97.4           % 925.972661        
+OVERALL         12000              11823           98.5           
+OVERALL         45.74           59.15              58.88           250        12000       
+OVERALL         0.125053        0.214339           0.212517       
+  Mean MAPE: 45.74%
+  Median MAPE: 28.36%
+  Mean MAPE: 59.15%
+  Median MAPE: 20.73%
+  Mean MAPE: 58.88%
+  Median MAPE: 20.97%
+
+----------------------------------------
+center_steps=40, center_lr=1e-2
+----------------------------------------
+OVERALL         1208.977061        0.818403           99.9           % 11.564434         
+OVERALL         12000              12000           100.0          
+OVERALL         19.57           19.20              19.20           250        12000       
+OVERALL         0.114520        0.135173           0.134752       
+  Mean MAPE: 19.57%
+  Median MAPE: 11.21%
+  Mean MAPE: 19.20%
+  Median MAPE: 10.25%
+  Mean MAPE: 19.20%
+  Median MAPE: 10.28%
+OVERALL         72.424674          0.859624           98.8           % 154.758187        
+OVERALL         12000              12000           100.0          
+OVERALL         25.00           32.12              31.98           250        12000       
+OVERALL         0.075418        0.130273           0.129154       
+  Mean MAPE: 25.00%
+  Median MAPE: 9.51%
+  Mean MAPE: 32.12%
+  Median MAPE: 13.29%
+  Mean MAPE: 31.98%
+  Median MAPE: 13.23%
+
+----------------------------------------
+center_steps=60, center_lr=1e-4
+----------------------------------------
+OVERALL         1202.998368        1.916898           99.8           % 1338.920884       
+OVERALL         12000              11588           96.6           
+OVERALL         37.95           81.49              80.60           250        12000       
+OVERALL         0.210030        0.573943           0.566516       
+  Mean MAPE: 37.95%
+  Median MAPE: 27.83%
+  Mean MAPE: 81.49%
+  Median MAPE: 33.30%
+  Mean MAPE: 80.60%
+  Median MAPE: 33.11%
+OVERALL         72.536293          0.297757           99.6           % 523.851835        
+OVERALL         12000              11112           92.6           
+OVERALL         20.31           62.25              61.40           250        12000       
+OVERALL         0.060920        0.235205           0.231648       
+  Mean MAPE: 20.31%
+  Median MAPE: 9.93%
+  Mean MAPE: 62.25%
+  Median MAPE: 25.53%
+  Mean MAPE: 61.40%
+  Median MAPE: 25.18%
+
+----------------------------------------
+center_steps=60, center_lr=3e-4
+----------------------------------------
+OVERALL         1216.472770        1.003070           99.9           % 1195.458178       
+OVERALL         12000              11511           95.9           
+OVERALL         32.56           84.81              83.74           250        12000       
+OVERALL         0.193966        0.612476           0.603935       
+  Mean MAPE: 32.56%
+  Median MAPE: 24.09%
+  Mean MAPE: 84.81%
+  Median MAPE: 35.54%
+  Mean MAPE: 83.74%
+  Median MAPE: 34.79%
+OVERALL         72.805266          0.254044           99.7           % 531.705088        
+OVERALL         12000              11058           92.2           
+OVERALL         14.89           60.91              59.97           250        12000       
+OVERALL         0.044231        0.230136           0.226342       
+  Mean MAPE: 14.89%
+  Median MAPE: 8.52%
+  Mean MAPE: 60.91%
+  Median MAPE: 25.93%
+  Mean MAPE: 59.97%
+  Median MAPE: 25.27%
+
+----------------------------------------
+center_steps=60, center_lr=1e-3
+----------------------------------------
+OVERALL         1227.990645        0.519349           100.0          % 636.361472        
+OVERALL         12000              11694           97.5           
+OVERALL         21.11           58.32              57.56           250        12000       
+OVERALL         0.129843        0.428705           0.422606       
+  Mean MAPE: 21.11%
+  Median MAPE: 11.17%
+  Mean MAPE: 58.32%
+  Median MAPE: 26.66%
+  Mean MAPE: 57.56%
+  Median MAPE: 26.23%
+OVERALL         73.494271          0.290942           99.6           % 801.449999        
+OVERALL         12000              11435           95.3           
+OVERALL         19.99           61.25              60.41           250        12000       
+OVERALL         0.060447        0.220929           0.217654       
+  Mean MAPE: 19.99%
+  Median MAPE: 7.83%
+  Mean MAPE: 61.25%
+  Median MAPE: 24.15%
+  Mean MAPE: 60.41%
+  Median MAPE: 23.81%
+
+----------------------------------------
+center_steps=60, center_lr=3e-3
+----------------------------------------
+OVERALL         1233.094839        0.572081           100.0          % 348.792020        
+OVERALL         12000              11920           99.3           
+OVERALL         16.29           49.97              49.28           250        12000       
+OVERALL         0.105375        0.366325           0.361000       
+  Mean MAPE: 16.29%
+  Median MAPE: 7.50%
+  Mean MAPE: 49.97%
+  Median MAPE: 25.89%
+  Mean MAPE: 49.28%
+  Median MAPE: 25.22%
+OVERALL         73.356139          0.452408           99.4           % 880.728679        
+OVERALL         12000              11702           97.5           
+OVERALL         12.37           56.01              55.12           250        12000       
+OVERALL         0.028189        0.193323           0.189953       
+  Mean MAPE: 12.37%
+  Median MAPE: 7.18%
+  Mean MAPE: 56.01%
+  Median MAPE: 21.30%
+  Mean MAPE: 55.12%
+  Median MAPE: 20.79%
+
+----------------------------------------
+center_steps=60, center_lr=1e-2
+----------------------------------------
+OVERALL         1201.147252        0.706336           99.9           % 10.629529         
+OVERALL         12000              12000           100.0          
+OVERALL         15.06           19.74              19.65           250        12000       
+OVERALL         0.103624        0.155219           0.154166       
+  Mean MAPE: 15.06%
+  Median MAPE: 7.12%
+  Mean MAPE: 19.74%
+  Median MAPE: 10.14%
+  Mean MAPE: 19.65%
+  Median MAPE: 10.10%
+OVERALL         74.680227          0.686934           99.1           % 161.366477        
+OVERALL         12000              12000           100.0          
+OVERALL         13.47           33.44              33.04           250        12000       
+OVERALL         0.042368        0.143767           0.141698       
+  Mean MAPE: 13.47%
+  Median MAPE: 7.31%
+  Mean MAPE: 33.44%
+  Median MAPE: 13.02%
+  Mean MAPE: 33.04%
+  Median MAPE: 12.85%
+
+----------------------------------------
+center_steps=80, center_lr=1e-4
+----------------------------------------
+OVERALL         1235.277499        0.445607           100.0          % 1232.459504       
+OVERALL         12000              11549           96.2           
+OVERALL         19.62           80.15              78.92           250        12000       
+OVERALL         0.124471        0.564349           0.555372       
+  Mean MAPE: 19.62%
+  Median MAPE: 11.23%
+  Mean MAPE: 80.15%
+  Median MAPE: 36.40%
+  Mean MAPE: 78.92%
+  Median MAPE: 35.39%
+OVERALL         74.611810          0.209860           99.7           % 531.890204        
+OVERALL         12000              11105           92.5           
+OVERALL         13.44           60.39              59.43           250        12000       
+OVERALL         0.041576        0.225800           0.222040       
+  Mean MAPE: 13.44%
+  Median MAPE: 6.87%
+  Mean MAPE: 60.39%
+  Median MAPE: 26.16%
+  Mean MAPE: 59.43%
+  Median MAPE: 25.54%
+
+----------------------------------------
+center_steps=80, center_lr=3e-4
+----------------------------------------
+OVERALL         1199.851692        0.389579           100.0          % 1059.009868       
+OVERALL         12000              11508           95.9           
+OVERALL         14.70           78.30              77.00           250        12000       
+OVERALL         0.097181        0.583237           0.573318       
+  Mean MAPE: 14.70%
+  Median MAPE: 8.15%
+  Mean MAPE: 78.30%
+  Median MAPE: 30.47%
+  Mean MAPE: 77.00%
+  Median MAPE: 29.45%
+OVERALL         72.906704          0.225963           99.7           % 557.259944        
+OVERALL         12000              11084           92.4           
+OVERALL         14.04           63.33              62.32           250        12000       
+OVERALL         0.043119        0.238845           0.234851       
+  Mean MAPE: 14.04%
+  Median MAPE: 8.27%
+  Mean MAPE: 63.33%
+  Median MAPE: 26.42%
+  Mean MAPE: 62.32%
+  Median MAPE: 25.75%
+
+----------------------------------------
+center_steps=80, center_lr=1e-3
+----------------------------------------
+OVERALL         1180.139560        0.351673           100.0          % 467.534452        
+OVERALL         12000              11605           96.7           
+OVERALL         12.65           51.88              51.08           250        12000       
+OVERALL         0.087094        0.387624           0.381490       
+  Mean MAPE: 12.65%
+  Median MAPE: 5.61%
+  Mean MAPE: 51.88%
+  Median MAPE: 25.97%
+  Mean MAPE: 51.08%
+  Median MAPE: 25.34%
+OVERALL         72.237380          0.228923           99.7           % 1066.371206       
+OVERALL         12000              11463           95.5           
+OVERALL         13.81           79.65              78.31           250        12000       
+OVERALL         0.041349        0.253161           0.248839       
+  Mean MAPE: 13.81%
+  Median MAPE: 6.72%
+  Mean MAPE: 79.65%
+  Median MAPE: 24.05%
+  Mean MAPE: 78.31%
+  Median MAPE: 23.51%
+
+----------------------------------------
+center_steps=80, center_lr=3e-3
+----------------------------------------
+OVERALL         1192.969477        0.420367           100.0          % 375.546192        
+OVERALL         12000              11873           98.9           
+OVERALL         12.20           51.02              50.23           250        12000       
+OVERALL         0.083985        0.373427           0.367520       
+  Mean MAPE: 12.20%
+  Median MAPE: 6.50%
+  Mean MAPE: 51.02%
+  Median MAPE: 27.32%
+  Mean MAPE: 50.23%
+  Median MAPE: 26.65%
+OVERALL         72.349730          0.310473           99.6           % 908.553411        
+OVERALL         12000              11667           97.2           
+OVERALL         14.21           56.17              55.32           250        12000       
+OVERALL         0.044630        0.200002           0.196831       
+  Mean MAPE: 14.21%
+  Median MAPE: 6.19%
+  Mean MAPE: 56.17%
+  Median MAPE: 21.06%
+  Mean MAPE: 55.32%
+  Median MAPE: 20.79%
+
+----------------------------------------
+center_steps=80, center_lr=1e-2
+----------------------------------------
+OVERALL         1197.589265        0.671907           99.9           % 9.148208          
+OVERALL         12000              12000           100.0          
+OVERALL         12.72           18.95              18.82           250        12000       
+OVERALL         0.080162        0.133596           0.132506       
+  Mean MAPE: 12.72%
+  Median MAPE: 7.52%
+  Mean MAPE: 18.95%
+  Median MAPE: 10.22%
+  Mean MAPE: 18.82%
+  Median MAPE: 10.12%
+OVERALL         74.926034          0.681619           99.1           % 143.375367        
+OVERALL         12000              12000           100.0          
+OVERALL         13.71           31.71              31.34           250        12000       
+OVERALL         0.042011        0.137098           0.135157       
+  Mean MAPE: 13.71%
+  Median MAPE: 7.40%
+  Mean MAPE: 31.71%
+  Median MAPE: 13.61%
+  Mean MAPE: 31.34%
+  Median MAPE: 13.40%
+
+----------------------------------------
+center_steps=100, center_lr=1e-4
+----------------------------------------
+OVERALL         1058.821789        0.334982           100.0          % 1130.402409       
+OVERALL         12000              11471           95.6           
+OVERALL         13.54           73.17              71.95           250        12000       
+OVERALL         0.095674        0.517060           0.508460       
+  Mean MAPE: 13.54%
+  Median MAPE: 6.95%
+  Mean MAPE: 73.17%
+  Median MAPE: 31.47%
+  Mean MAPE: 71.95%
+  Median MAPE: 30.61%
+OVERALL         74.757999          0.150961           99.8           % 505.148905        
+OVERALL         12000              11058           92.2           
+OVERALL         14.94           59.24              58.34           250        12000       
+OVERALL         0.045353        0.232787           0.228962       
+  Mean MAPE: 14.94%
+  Median MAPE: 7.04%
+  Mean MAPE: 59.24%
+  Median MAPE: 25.05%
+  Mean MAPE: 58.34%
+  Median MAPE: 24.43%
+
+----------------------------------------
+center_steps=100, center_lr=3e-4
+----------------------------------------
+OVERALL         1143.333577        0.317042           100.0          % 949.412717        
+OVERALL         12000              11505           95.9           
+OVERALL         12.95           68.86              67.72           250        12000       
+OVERALL         0.084412        0.468665           0.460824       
+  Mean MAPE: 12.95%
+  Median MAPE: 7.07%
+  Mean MAPE: 68.86%
+  Median MAPE: 31.13%
+  Mean MAPE: 67.72%
+  Median MAPE: 30.35%
+OVERALL         69.948745          0.214455           99.7           % 625.354308        
+OVERALL         12000              11103           92.5           
+OVERALL         14.43           66.61              65.55           250        12000       
+OVERALL         0.044350        0.245209           0.241110       
+  Mean MAPE: 14.43%
+  Median MAPE: 7.40%
+  Mean MAPE: 66.61%
+  Median MAPE: 27.48%
+  Mean MAPE: 65.55%
+  Median MAPE: 26.85%
+
+----------------------------------------
+center_steps=100, center_lr=1e-3
+----------------------------------------
+OVERALL         1272.125185        0.311732           100.0          % 512.223461        
+OVERALL         12000              11631           96.9           
+OVERALL         11.46           51.08              50.27           250        12000       
+OVERALL         0.082079        0.391920           0.385597       
+  Mean MAPE: 11.46%
+  Median MAPE: 5.72%
+  Mean MAPE: 51.08%
+  Median MAPE: 24.39%
+  Mean MAPE: 50.27%
+  Median MAPE: 23.87%
+OVERALL         71.107226          0.212987           99.7           % 1216.514571       
+OVERALL         12000              11340           94.5           
+OVERALL         14.11           77.96              76.66           250        12000       
+OVERALL         0.041797        0.242531           0.238435       
+  Mean MAPE: 14.11%
+  Median MAPE: 6.94%
+  Mean MAPE: 77.96%
+  Median MAPE: 23.89%
+  Mean MAPE: 76.66%
+  Median MAPE: 23.40%
+
+----------------------------------------
+center_steps=100, center_lr=3e-3
+----------------------------------------
+OVERALL         1169.605674        0.387705           100.0          % 383.855823        
+OVERALL         12000              11828           98.6           
+OVERALL         12.19           53.05              52.21           250        12000       
+OVERALL         0.087768        0.386481           0.380385       
+  Mean MAPE: 12.19%
+  Median MAPE: 5.93%
+  Mean MAPE: 53.05%
+  Median MAPE: 29.69%
+  Mean MAPE: 52.21%
+  Median MAPE: 29.02%
+OVERALL         74.589438          0.289459           99.6           % 847.427050        
+OVERALL         12000              11636           97.0           
+OVERALL         14.42           54.58              53.76           250        12000       
+OVERALL         0.044667        0.198832           0.195685       
+  Mean MAPE: 14.42%
+  Median MAPE: 7.23%
+  Mean MAPE: 54.58%
+  Median MAPE: 21.33%
+  Mean MAPE: 53.76%
+  Median MAPE: 20.93%
+
+----------------------------------------
+center_steps=100, center_lr=1e-2
+----------------------------------------
+OVERALL         1215.613588        0.652282           99.9           % 10.465870         
+OVERALL         12000              12000           100.0          
+OVERALL         12.19           19.71              19.56           250        12000       
+OVERALL         0.082560        0.146105           0.144808       
+  Mean MAPE: 12.19%
+  Median MAPE: 5.81%
+  Mean MAPE: 19.71%
+  Median MAPE: 10.49%
+  Mean MAPE: 19.56%
+  Median MAPE: 10.37%
+OVERALL         71.046145          0.662234           99.1           % 143.892203        
+OVERALL         12000              11996           100.0          
+OVERALL         14.62           34.31              33.91           250        12000       
+OVERALL         0.044010        0.152702           0.150484       
+  Mean MAPE: 14.62%
+  Median MAPE: 7.46%
+  Mean MAPE: 34.31%
+  Median MAPE: 13.71%
+  Mean MAPE: 33.91%
+  Median MAPE: 13.54%
+

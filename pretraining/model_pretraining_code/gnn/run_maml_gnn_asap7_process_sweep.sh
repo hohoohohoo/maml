@@ -22,7 +22,7 @@ if [ $# -lt 1 ]; then
     echo "  $0 json_configs/gnn_maml_asap7_process_sweep_config.json --dry-run"
     echo ""
     echo "Note: Requires ASAP7 unified dataset to be pre-generated."
-    echo "      Run build_gnn_dataset_cached_with_process.py first."
+    echo "      Run asap7/build_gnn_dataset_process_cached_asap7.py first."
     echo ""
     echo "Pooling Options (set 'pooling' in JSON config):"
     echo "  - mean: Global mean pooling (default)"

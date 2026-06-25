@@ -79,3 +79,66 @@ Thumbs.db
 # Validation test results and checkpoints
 pretraining/model_test_code/check_point/
 pretraining/model_test_code/data_result_npy_directory/ 
+
+# Large data / output directories (added 2026-06-25 before refactor commit)
+dataset_all/
+pretrained_models/
+\[rebuttal\]STA/
+
+# Lib_file_generation outputs (intermediate caches + predicted libs)
+Lib_file_generation/predicted_lropt/
+Lib_file_generation/predicted_comb_sweep/
+Lib_file_generation/predicted_seq/
+Lib_file_generation/sweep_logs/
+Lib_file_generation/sweep_logs_*/
+Lib_file_generation/Projects_TSMC_SYN/
+Lib_file_generation/Projects_TSMC_SYN_pred/
+
+# Test result npy directories
+pretraining/**/data_result_npy_directory_*/
+pretraining/**/sweep_logs/
+pretraining/**/sweep_logs_*/
+pretraining/**/parallel_logs/
+
+# adaptation comparison json results (large)
+pretraining/**/adaptation_method_comparison_results/
+
+# CAD_TEST data (raw extracted cells, lib snapshots — keep .py/.sh/.md only)
+CAD_TEST/AND_cells_extracted/
+CAD_TEST/20200414_base_*/
+CAD_TEST/alpha_release/
+
+# General .npy/.npz outputs anywhere
+*.npy
+*.npz
+
+# Papers / figures / result files (code-only snapshot)
+*.pdf
+*.png
+*.jpg
+*.jpeg
+*.svg
+*.csv
+*.tex
+
+# Circuit netlists / dataset files
+*.cdl
+*.spi
+
+# Backup files
+*.bak
+*.bak_*
+*.pth.bak*
+
+# Compressed archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Adaptation comparison results (json + figure outputs)
+pretraining/model_test_code/MLP/topology_validation/adaptation_comparison/results/
+
+# Result management figures + analysis outputs (keep .py/.md/.ipynb code, ignore artifacts)
+result_management/**/figures/
+result_management/**/results/

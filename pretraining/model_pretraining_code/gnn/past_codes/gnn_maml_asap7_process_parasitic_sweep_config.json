@@ -1,0 +1,28 @@
+{
+  "experiment_name": "gnn_maml_asap7_process_parasitic_sweep",
+  "description": "ASAP7 Process GNN MAML with parasitic capacitance (12D node features: 7 base + 4 process params + parasitic_cap)",
+  "base_config": {
+    "data_type": "cell",
+    "graph_mode": "full_graph",
+    "meta_lr": 0.0001,
+    "innerdiv": 10,
+    "total_iterations": 300000,
+    "chunk_size": 100000,
+    "K": 5,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1,
+    "gpu": 4,
+    "pooling": "output"
+  },
+  "sweep_params": {
+    "conv_hidden_dim": [64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [256, 512],
+    "num_fc_layers": [2]
+  },
+  "_comments": {
+    "pooling_options": "mean, max, add, output (output-node-only)",
+    "output_node_idx_note": "output_node_idx is dynamically determined from topology cache (fallback default: 2)",
+    "node_features": "12D: 7 base electrical + param_a + param_b + param_c + temperature + parasitic_cap"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "experiment_name": "maml_layer_sweep_range",
+  "description": "Sweep using min/max/step range specification",
+  "base_config": {
+    "dataset_config": 0,
+    "data_type": "cell",
+    "gpu": "0",
+    "num_iterations": 300000,
+    "meta": 32
+  },
+  "sweep_params": {
+    "layer_length": {
+      "min": 40,
+      "max": 100,
+      "step": 20
+    },
+    "inner": {
+      "min": 1,
+      "max": 5,
+      "step": 2
+    },
+    "innerdiv": {
+      "min": 10,
+      "max": 100,
+      "step": 30
+    }
+  }
+}

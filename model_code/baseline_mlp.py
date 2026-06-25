@@ -172,11 +172,7 @@ class MLP_pretraining:
                 inner_self.fc2 = nn.Linear(hidden_size, hidden_size)
                 inner_self.fc3 = nn.Linear(hidden_size, hidden_size)
                 inner_self.fc4 = nn.Linear(hidden_size, output_size)
-                for m in inner_self.modules():
-                    if isinstance(m, nn.Linear):
-                        torch.nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
-                        if m.bias is not None:
-                            torch.nn.init.zeros_(m.bias)
+                # FAIRINIT: rely on nn.Linear default (kaiming_uniform_(a=sqrt(5))), same as MAMLModel_3hidden
 
             def forward(inner_self, x):
                 x = F.relu(inner_self.fc1(x))

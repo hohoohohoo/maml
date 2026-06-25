@@ -1,0 +1,36 @@
+{
+  "experiment_name": "maml_custom_experiments",
+  "description": "Run specific predefined experiments",
+  "base_config": {
+    "dataset_config": 0,
+    "data_type": "cell",
+    "gpu": "0",
+    "num_iterations": 100000
+  },
+  "fixed_experiments": [
+    {
+      "layer_length": 40,
+      "inner": 1,
+      "innerdiv": 100,
+      "meta": 32
+    },
+    {
+      "layer_length": 64,
+      "inner": 1,
+      "innerdiv": 100,
+      "meta": 32
+    },
+    {
+      "layer_length": 64,
+      "inner": 2,
+      "innerdiv": 50,
+      "meta": 64
+    },
+    {
+      "layer_length": 128,
+      "inner": 1,
+      "innerdiv": 100,
+      "meta": 16
+    }
+  ]
+}

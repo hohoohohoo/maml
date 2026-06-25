@@ -30,8 +30,11 @@ from utils.dataset_config import get_dataset_config, print_available_datasets, l
 def main():
     # 커맨드라인 인자 파싱
     parser = argparse.ArgumentParser(description='MAML Unified Pretraining - Multiple Dataset Configurations')
-    parser.add_argument('--dataset_config', type=int, required=True, choices=[0, 1, 2, 3],
-                        help='Dataset configuration: 0=ASAP7 intra, 1=ASAP7 agnostic, 2=TSMC intra, 3=TSMC agnostic')
+    parser.add_argument('--dataset_config', type=int, required=True, choices=[0, 1, 2, 3, 6, 7],
+                        help='Dataset configuration: 0=ASAP7 intra, 1=ASAP7 agnostic, '
+                             '2=TSMC intra, 3=TSMC agnostic, '
+                             '6=TSMC combined intra patched (use 6 for training), '
+                             '7=TSMC combined agnostic patched (shares config-6 data/checkpoint)')
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to specific pretrained model file to resume from')
     parser.add_argument('--auto_resume', action='store_true',
@@ -107,8 +110,8 @@ def main():
     print(f"   GPU: {args.gpu}")
 
     # 모델 디렉토리 경로
-    pretrained_models_dir = "../../pretrained_models/training_loss_taskdivide_all"
-    checkpoint_dir = "../../pretrained_models/checkpoints/training_loss_taskdivide_all_checkpoints"
+    pretrained_models_dir = "../../../pretrained_models/training_loss_taskdivide_all"
+    checkpoint_dir = "../../../pretrained_models/checkpoints/training_loss_taskdivide_all_checkpoints"
 
     # 디렉토리 생성 (없으면)
     os.makedirs(pretrained_models_dir, exist_ok=True)
@@ -219,7 +222,16 @@ def main():
                     torch.nn.init.zeros_(param)
 
     # 모델 파일명 결정 (topology_type에 따라)
-    if topology_type == 'intra':
+    # Configs 6/7 (TSMC combined patched) override the topology-derived
+    # suffix with the shared 'combined' label so config 6 and
+    # config 7 write to / load from the same checkpoint. This is what
+    # makes "train once, evaluate as both intra and agnostic" work; it
+    # also keeps the new checkpoint physically distinct from the legacy
+    # config-2/3 checkpoints.
+    explicit_suffix = dataset_config.get('model_path_suffix', '')
+    if explicit_suffix:
+        model_suffix = explicit_suffix.lstrip('_')
+    elif topology_type == 'intra':
         model_suffix = 'intratopology' if tech == 'asap7' else 'intra_topology'
     else:  # agnostic
         model_suffix = 'topology_agnostic'
@@ -311,7 +323,7 @@ def main():
 
     # Save loss log if enabled
     if args.enable_loss_logging and maml2.iteration_loss_log:
-        loss_log_dir = args.loss_log_dir or "../../pretrained_models/loss_logs_maml"
+        loss_log_dir = args.loss_log_dir or "../../../pretrained_models/loss_logs_maml"
         os.makedirs(loss_log_dir, exist_ok=True)
         loss_log_filename = f"loss_log_maml_{tech}_{model_suffix}_{data_type}_innerdiv{innerdiv}_meta{meta}_iter{final_iteration}_inner{inner}.json"
         loss_log_path = os.path.join(loss_log_dir, loss_log_filename)

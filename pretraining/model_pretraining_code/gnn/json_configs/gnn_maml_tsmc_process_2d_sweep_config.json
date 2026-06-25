@@ -1,0 +1,30 @@
+{
+  "experiment_name": "gnn_maml_tsmc_process_2d_vt_sweep",
+  "base_config": {
+    "dataset_dir": "/home/tkdgn2907/Deepsets_test/MAML/Projects/dataset_all/gnn_dataset_2d",
+    "cache_path": "/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_tsmc_tcbn28hpcplusbwp30p140_110a_lpe_typical.pth",
+    "data_type": "cell",
+    "graph_mode": "stage_aware",
+    "voltage_mode": "all_nodes",
+    "temp_mode": "typical",
+    "innerdiv": 10,
+    "meta_lr": 0.0001,
+    "inner_steps": 1,
+    "K": 5,
+    "tasks_per_meta_batch": 16,
+    "total_iterations": 300000,
+    "chunk_size": 100000,
+    "pooling": "mean",
+    "gpu": "0"
+  },
+  "sweep_params": {
+    "conv_hidden_dim": [32],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [64],
+    "num_fc_layers": [2]
+  },
+  "loss_logging": {
+    "enabled": true,
+    "log_every": 1000
+  }
+}

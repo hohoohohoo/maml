@@ -1,0 +1,28 @@
+{
+  "experiment_name": "gnn_maml_tsmc_parasitic_sweep",
+  "description": "TSMC GNN MAML with parasitic capacitance (12D node features: 7 base + voltage/slew/load/temp/parasitic_cap)",
+  "base_config": {
+    "data_type": "cell",
+    "graph_mode": "stage_aware",
+    "meta_lr": 0.0001,
+    "innerdiv": 10,
+    "total_iterations": 300000,
+    "chunk_size": 100000,
+    "K": 5,
+    "tasks_per_meta_batch": 16,
+    "inner_steps": 1,
+    "gpu": 1,
+    "pooling": "output"
+  },
+  "sweep_params": {
+    "conv_hidden_dim": [32,64],
+    "num_conv_layers": [2],
+    "fc_hidden_dim": [512],
+    "num_fc_layers": [2]
+  },
+  "_comments": {
+    "pooling_options": "mean, max, add, output (output-node-only)",
+    "output_node_idx_note": "output_node_idx is dynamically determined from topology cache (fallback default: 2)",
+    "node_features": "12D: 7 base electrical + voltage + input_slew + output_load + temperature + parasitic_cap"
+  }
+}
