@@ -818,139 +818,116 @@ def load_cell_topology_cache(cache_path: str):
     return torch.load(cache_path)
 
 
+def _validate_input_ports(cache, cell_name, input_port_names):
+    """Warn (don't raise) when provided input_port_names disagree with the cache."""
+    if input_port_names is None:
+        return
+    expected = set(cache['external_inputs'])
+    provided = set(input_port_names)
+    if expected != provided:
+        print(f"   ⚠️ Warning: Input port mismatch for {cell_name}")
+        print(f"      Expected: {expected}")
+        print(f"      Provided: {provided}")
+
+
+def _resolve_node_voltage(node, is_transistor, voltage, voltage_mode):
+    """Per-node voltage according to voltage_mode (all_nodes / vdd_only / vdd_mos)."""
+    if voltage_mode == 'vdd_only':
+        return voltage if node == 'VDD' else 0.0
+    if voltage_mode == 'vdd_mos':
+        return voltage if (node == 'VDD' or is_transistor) else 0.0
+    return voltage  # 'all_nodes' default
+
+
+def _resolve_input_port_slew(node, input_slew, slew_mode, related_pin):
+    """Per-input-port slew: all-of vs only-related_pin."""
+    if slew_mode == 'related_pin_only' and related_pin is not None:
+        return input_slew if node == related_pin else 0.0
+    return input_slew
+
+
+def _sum_gate_width(node, transistor_info):
+    """Sum widths of transistors whose gate net equals `node` (intermediate-net feature)."""
+    return sum(
+        info['width']
+        for info in transistor_info.values()
+        if info['gate'] == node
+    )
+
+
 def apply_topology_to_sample(topology_cache, cell_name: str, voltage: float,
                              input_slew: float, output_load: float, output_value: float,
                              input_port_names: list = None, voltage_mode: str = 'all_nodes',
                              slew_mode: str = 'all', related_pin: str = None):
     """
-    Apply voltage/slew/load to pre-computed topology to create a graph sample
+    Apply voltage / input_slew / output_load to a pre-computed full_graph topology
+    cache and return a node_features tensor + all_nodes list.
 
     Args:
-        topology_cache: Pre-computed topology cache
-        cell_name: Cell name
-        voltage: Voltage value
-        input_slew: Input slew
-        output_load: Output load
-        output_value: Output timing value (delay or transition)
-        input_port_names: List of input port names (optional, for validation)
-        voltage_mode: 'all_nodes' (default) - voltage applied to all nodes
-                      'vdd_only' - voltage only on VDD node, 0 for others
-        slew_mode: 'all' (default) - input_slew applied to all input ports
-                   'related_pin_only' - input_slew only applied to related_pin
-        related_pin: The specific input pin for slew assignment (used when slew_mode='related_pin_only')
+        topology_cache: Pre-computed topology cache.
+        cell_name: Cell name.
+        voltage: Voltage value.
+        input_slew: Input slew.
+        output_load: Output load.
+        output_value: Output timing value (delay or transition); accepted for API
+            compatibility, not embedded in the returned features.
+        input_port_names: Optional list of input port names (warning-only validation
+            against the cache; never raises).
+        voltage_mode:
+            - 'all_nodes' (default): voltage applied to all nodes.
+            - 'vdd_only': voltage only on VDD, 0 elsewhere.
+            - 'vdd_mos': voltage on VDD + transistor nodes only.
+        slew_mode:
+            - 'all' (default): input_slew on all input port nodes.
+            - 'related_pin_only': input_slew only on the related_pin port.
+        related_pin: Specific input pin (used when slew_mode='related_pin_only').
+
+    Feature format per node: [is_power, is_port, trans_type, width, voltage,
+    input_slew, output_load]. Transistor rows always have input_slew=0 in
+    full_graph mode (slew lives on the input port nodes).
 
     Returns:
-        dict: Graph sample ready for GNN training
+        {'all_nodes': list, 'node_features': [N,7] tensor}.
     """
-
     if cell_name not in topology_cache:
         raise ValueError(f"Cell {cell_name} not found in topology cache")
-
     cache = topology_cache[cell_name]
-
-    # Validate input ports if provided
-    if input_port_names is not None:
-        expected_inputs = set(cache['external_inputs'])
-        provided_inputs = set(input_port_names)
-        if expected_inputs != provided_inputs:
-            print(f"   ⚠️ Warning: Input port mismatch for {cell_name}")
-            print(f"      Expected: {expected_inputs}")
-            print(f"      Provided: {provided_inputs}")
-
-    # Create node features using cached topology + runtime parameters
-    node_features = []
-    circuit_nodes = []
-    transistor_node_list = []
+    _validate_input_ports(cache, cell_name, input_port_names)
 
     all_nodes = cache['all_nodes']
     transistor_info = cache['transistor_info']
-    external_inputs = cache['external_inputs']
-    output_nodes = cache['output_nodes']  # Get output nodes from cache
-    transistor_nodes = cache.get('transistor_nodes', [])  # Get transistor node list from cache
+    external_inputs_set = set(cache['external_inputs'])
+    output_nodes_set = set(cache['output_nodes'])
+    transistor_nodes = cache.get('transistor_nodes', [])
 
+    node_features = []
     for node in all_nodes:
-        # Check if node is a transistor (use transistor_nodes list for robustness)
         is_transistor = node in transistor_nodes or node in transistor_info
-
-        # Determine voltage value based on voltage_mode
-        if voltage_mode == 'vdd_only':
-            node_voltage = voltage if node == 'VDD' else 0.0
-        elif voltage_mode == 'vdd_mos':
-            # Apply voltage to VDD and MOS transistor nodes only
-            node_voltage = voltage if (node == 'VDD' or is_transistor) else 0.0
-        else:  # 'all_nodes' (default)
-            node_voltage = voltage
+        node_voltage = _resolve_node_voltage(node, is_transistor, voltage, voltage_mode)
 
         if is_transistor:
-            if node in transistor_info:
-                info = transistor_info[node]
-                # Transistor: [0, 0, trans_type, width, voltage, 0, 0]
-                # Match transform_sample_MAML_stage_aware.py line 218
-                node_features.append([0.0, 0.0, info['type'], info['width'], node_voltage, 0.0, 0.0])
-                transistor_node_list.append(node)
-            else:
-                # Fallback (should not happen)
+            info = transistor_info.get(node)
+            if info is None:
+                # Defensive fallback: transistor in node list but missing info.
                 node_features.append([0.0, 0.0, -1.0, 0.1, node_voltage, 0.0, 0.0])
-                transistor_node_list.append(node)
-
-        else:  # Circuit node
-            circuit_nodes.append(node)
-
-            if node in ['VDD', 'VSS']:
-                # Power rails: [1, 0, 0, 0, voltage, 0, 0]
-                # Match transform_sample_MAML_stage_aware.py line 230
-                node_features.append([1.0, 0.0, 0.0, 0.0, node_voltage, 0.0, 0.0])
-            elif node in output_nodes:
-                # Output port: [0, 1, 0, 0, voltage, 0, output_load]
-                # Match transform_sample_MAML_stage_aware.py line 234
-                # Handles standard Y output and non-standard outputs like CON, SN (FA/HA cells)
-                node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, 0.0, output_load])
-            elif node in external_inputs:
-                # Input port: [0, 1, 0, 0, voltage, input_slew, 0]
-                # Match transform_sample_MAML_stage_aware.py line 237
-                # Apply slew based on slew_mode
-                if slew_mode == 'related_pin_only' and related_pin is not None:
-                    # Only apply input_slew to the related_pin, others get 0
-                    node_slew = input_slew if node == related_pin else 0.0
-                else:
-                    # Default: apply input_slew to all input ports
-                    node_slew = input_slew
-                node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, node_slew, 0.0])
             else:
-                # Intermediate gate node (should not happen in full_graph mode normally)
-                # 해당 gate로 제어되는 모든 transistor의 width 합을 사용
-                gate_width_sum = 0.0
-                # Find all transistors that use this node as gate
-                for trans_name, trans_info in transistor_info.items():
-                    if trans_info['gate'] == node:
-                        gate_width_sum += trans_info['width']
+                node_features.append([0.0, 0.0, info['type'], info['width'], node_voltage, 0.0, 0.0])
+        elif node in ('VDD', 'VSS'):
+            node_features.append([1.0, 0.0, 0.0, 0.0, node_voltage, 0.0, 0.0])
+        elif node in output_nodes_set:
+            node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, 0.0, output_load])
+        elif node in external_inputs_set:
+            node_slew = _resolve_input_port_slew(node, input_slew, slew_mode, related_pin)
+            node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, node_slew, 0.0])
+        else:
+            # Intermediate gate net (rare in full_graph mode): feature width = Σ gate-driven Ws.
+            gate_width_sum = _sum_gate_width(node, transistor_info)
+            node_features.append([0.0, 1.0, 0.0, gate_width_sum, node_voltage, 0.0, 0.0])
 
-                # Intermediate node: [0, 1, 0, gate_width_sum, voltage, 0, 0]
-                node_features.append([0.0, 1.0, 0.0, gate_width_sum, node_voltage, 0.0, 0.0])
-
-    # Convert to tensors
-    node_features_tensor = torch.tensor(node_features, dtype=torch.float32)
-
-
-    # Create graph sample
-    graph_sample = {
-        # 'cell': cell_name,
-        # 'voltage': voltage,
-        # 'output': output_value,
-        'all_nodes': all_nodes,  # IMPORTANT: Required for process parameter assignment
-        # 'circuit_nodes': circuit_nodes,
-        # 'transistor_nodes': transistor_node_list,
-        'node_features': node_features_tensor,
-        # 'edge_index': edge_index_tensor,
-        # 'edge_attr': edge_attr_tensor,
-        #'adjacency_matrix': adjacency_matrix,
-        # 'total_node_count': num_nodes,
-        # 'input_slew': input_slew,
-        # 'output_load': output_load,
-        # 'graph_mode': 'full_graph'
+    return {
+        'all_nodes': all_nodes,
+        'node_features': torch.tensor(node_features, dtype=torch.float32),
     }
-
-    return graph_sample
 
 
 if __name__ == "__main__":
