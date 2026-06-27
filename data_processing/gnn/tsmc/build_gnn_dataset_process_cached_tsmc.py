@@ -299,7 +299,7 @@ def get_test_folders(lib_base_path: Path) -> List[Path]:
             temp_str = temp_to_folder_str(temp)
             folder_name = f"TSMC_{corner}_{temp_str}"
             folder_path = lib_base_path / folder_name
-    
+
             if folder_path.exists() and folder_path.is_dir():
                 test_folders.append(folder_path)
 
@@ -504,6 +504,501 @@ def process_directory_for_unified(folder_path, topology_cache, cache_type, proce
     return all_samples_per_lib, num_tasks
 
 
+# ============================================================================
+# Setup / config helpers
+# ============================================================================
+
+def _print_config_banner(
+    cache_path: str, cache_type: str, lib_base_path: str, output_dir: str,
+    data_type: str, include_parasitic_cap: bool, voltage_mode: str,
+    temperature_mode: str, slew_mode: str, include_zeros_in_norm: bool,
+    topology_suffix: str, num_features: int,
+) -> None:
+    print("=" * 80)
+    print("BUILDING TSMC GNN DATASET - UNIFIED 3D FORMAT")
+    print("=" * 80)
+    print(f"Cache path: {cache_path}")
+    print(f"Cache type: {cache_type}")
+    print(f"Lib base path: {lib_base_path}")
+    print(f"Output dir: {output_dir}")
+    print(f"Data type: {data_type}")
+    print(f"Include parasitic cap: {include_parasitic_cap}")
+    print(f"Voltage mode: {voltage_mode}")
+    print(f"Temperature mode: {temperature_mode}")
+    print(f"Slew mode: {slew_mode}")
+    print(f"Include zeros in norm: {include_zeros_in_norm} ({'original' if include_zeros_in_norm else 'norm2'})")
+    print(f"Topology suffix: '{topology_suffix}'")
+    print(f"Node features: {num_features}D ({'7 base + 4 process + 1 cap' if include_parasitic_cap else '7 base + 4 process'})")
+    print(f"\nTrain temperatures: {TRAIN_TEMPERATURES}")
+    print(f"Test temperatures: {TEST_TEMPERATURES}")
+    print(f"Train corners: {TRAIN_CORNERS}")
+    print(f"\n⚠️  Excluding INTRA_TOPOLOGY_CELLS from train data:")
+    for cell in INTRA_TOPOLOGY_CELLS:
+        print(f"   - {cell}")
+    print("=" * 80)
+
+
+def _setup_paths_and_suffix(
+    output_dir: str, include_parasitic_cap: bool,
+    voltage_mode: str, temperature_mode: str, slew_mode: str,
+    topology_suffix: str,
+) -> Tuple[Path, str]:
+    """Resolve final output_dir (adding 12D subdir if needed) and the mode suffix."""
+    output_dir = Path(output_dir)
+    if include_parasitic_cap:
+        output_dir = output_dir / "with_parasitic_cap"
+        print(f"   Using subdirectory for 12D features: {output_dir}")
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    voltage_suffix = f"_{voltage_mode}" if voltage_mode != 'all_nodes' else ""
+    temperature_suffix = f"_{temperature_mode}" if temperature_mode != 'mos_only' else ""
+    slew_suffix = "_relpin" if slew_mode == 'related_pin_only' else ""
+    mode_suffix = f"{topology_suffix}{voltage_suffix}{temperature_suffix}{slew_suffix}"
+    return output_dir, mode_suffix
+
+
+# ============================================================================
+# Train data: collection + tensor build + save
+# ============================================================================
+
+def _collect_train_tasks(
+    train_folders: List[Path], topology_cache, cache_type: str, data_type: str,
+    include_parasitic_cap: bool, voltage_mode: str, temperature_mode: str,
+    slew_mode: str,
+) -> Tuple[List[dict], Optional[int]]:
+    """For each (corner, temp) train folder, run process_directory_for_unified and
+    fold per-lib tasks aligned by task index into a flat task list.
+    Excludes INTRA_TOPOLOGY_CELLS from results.
+    Returns (all_train_tasks, num_libs).
+    """
+    all_train_tasks: List[dict] = []
+    num_libs: Optional[int] = None
+
+    for dir_idx, folder in enumerate(train_folders):
+        corner, temperature, _ = parse_tsmc_folder_name(folder.name)
+        process_params = get_abc_parameters(corner, temperature)
+
+        print(f"\n[{dir_idx+1}/{len(train_folders)}] Processing {folder.name} (corner={corner}, temp={temperature})")
+
+        lib_files = sorted(folder.glob("*.lib"))
+        if not lib_files:
+            print(f"   ⚠️  No .lib files found, skipping...")
+            continue
+
+        if num_libs is None:
+            num_libs = len(lib_files)
+            print(f"   Number of lib files (voltages): {num_libs}")
+        elif len(lib_files) != num_libs:
+            print(f"   ⚠️  Warning: Expected {num_libs} lib files, found {len(lib_files)}")
+
+        all_samples_per_lib, num_tasks_dir = process_directory_for_unified(
+            folder, topology_cache, cache_type, process_params, data_type,
+            include_parasitic_cap=include_parasitic_cap, voltage_mode=voltage_mode,
+            temperature_mode=temperature_mode, slew_mode=slew_mode
+        )
+        print(f"   ✓ {num_tasks_dir} tasks from {len(lib_files)} lib files")
+
+        excluded_count = 0
+        for task_idx in range(num_tasks_dir):
+            samples_by_lib = {}
+            valid = True
+            for lib_idx in range(num_libs):
+                if lib_idx < len(all_samples_per_lib) and task_idx < len(all_samples_per_lib[lib_idx]):
+                    samples_by_lib[lib_idx] = all_samples_per_lib[lib_idx][task_idx]
+                else:
+                    valid = False
+                    break
+
+            if valid and len(samples_by_lib) == num_libs:
+                cell_name = samples_by_lib[0]['cell_name']
+                if cell_name in INTRA_TOPOLOGY_CELLS:
+                    excluded_count += 1
+                    continue
+                all_train_tasks.append({
+                    'dir_name': folder.name,
+                    'corner': corner,
+                    'temperature': temperature,
+                    'samples_by_lib': samples_by_lib
+                })
+
+        if excluded_count > 0:
+            print(f"   ⚠️  Excluded {excluded_count} tasks from INTRA_TOPOLOGY_CELLS")
+
+        gc.collect()
+
+    print(f"\n📊 Total tasks collected: {len(all_train_tasks)}")
+    print(f"   Number of libs (voltages): {num_libs}")
+    return all_train_tasks, num_libs
+
+
+def _allocate_and_fill_train_tensors(
+    all_train_tasks: List[dict], num_libs: int, num_features: int,
+) -> dict:
+    """Allocate the 3D tensors and fill from collected tasks.
+    Returns a dict with node_features / outputs / node_slices / metadata.
+    """
+    print(f"\n🔧 Validating task consistency...")
+
+    task_node_counts = []
+    cell_names = []
+    delay_types = []
+    output_names = []
+    for task_info in all_train_tasks:
+        sample = task_info['samples_by_lib'][0]
+        task_node_counts.append(sample['num_nodes'])
+        cell_names.append(sample['cell_name'])
+        delay_types.append(sample['delay_type'])
+        output_names.append(sample['output_name'])
+
+    total_nodes = sum(task_node_counts)
+    num_tasks = len(all_train_tasks)
+
+    print(f"   Total tasks: {num_tasks}")
+    print(f"   Total nodes: {total_nodes}")
+    print(f"   Num libs: {num_libs}")
+    print(f"   Features: {num_features}")
+
+    node_slices = np.zeros(num_tasks + 1, dtype=np.int64)
+    node_slices[1:] = np.cumsum(task_node_counts)
+
+    print(f"\n💾 Allocating 3D tensors...")
+    print(f"   node_features: [{num_libs}, {total_nodes}, {num_features}]")
+    print(f"   outputs: [{num_libs}, {num_tasks}]")
+
+    all_node_features = np.zeros((num_libs, total_nodes, num_features), dtype=np.float32)
+    all_outputs = np.zeros((num_libs, num_tasks), dtype=np.float32)
+
+    print(f"\n📝 Filling tensors...")
+    for task_idx, task_info in enumerate(all_train_tasks):
+        if task_idx % 10000 == 0:
+            print(f"   Processing task {task_idx}/{num_tasks}...")
+
+        samples_by_lib = task_info['samples_by_lib']
+        node_start = node_slices[task_idx]
+        node_end = node_slices[task_idx + 1]
+
+        for lib_idx, sample in samples_by_lib.items():
+            nf = sample['node_features']
+            if isinstance(nf, torch.Tensor):
+                nf = nf.cpu().numpy()
+            all_node_features[lib_idx, node_start:node_end, :] = nf
+
+            out = sample['output']
+            if isinstance(out, torch.Tensor):
+                out = out.item()
+            all_outputs[lib_idx, task_idx] = out
+
+    return {
+        'node_features': all_node_features,
+        'outputs': all_outputs,
+        'node_slices': node_slices,
+        'task_node_counts': task_node_counts,
+        'cell_names': cell_names,
+        'delay_types': delay_types,
+        'output_names': output_names,
+        'num_tasks': num_tasks,
+        'total_nodes': total_nodes,
+    }
+
+
+def _compute_normalization_stats(
+    node_features: np.ndarray, include_parasitic_cap: bool, include_zeros_in_norm: bool,
+) -> Tuple[Dict[int, Dict[str, float]], List[int], List[str]]:
+    """Compute per-feature mean/std for the indices flagged for normalization.
+
+    include_zeros_in_norm=True  : original method (include zeros in stats).
+    include_zeros_in_norm=False : norm2 method (exclude zeros from stats).
+    """
+    norm_method = "all values" if include_zeros_in_norm else "non-zero values only"
+    print(f"\n📊 Calculating normalization statistics ({norm_method})...")
+    if include_parasitic_cap:
+        normalize_indices = [4, 5, 6, 10, 11]
+        normalize_names = ['voltage', 'input_slew', 'output_load', 'temperature', 'parasitic_cap']
+    else:
+        normalize_indices = [4, 5, 6, 10]
+        normalize_names = ['voltage', 'input_slew', 'output_load', 'temperature']
+
+    norm_stats: Dict[int, Dict[str, float]] = {}
+    for idx, name in zip(normalize_indices, normalize_names):
+        feature_data = node_features[:, :, idx].flatten()
+        if include_zeros_in_norm:
+            mean = float(np.mean(feature_data))
+            std = float(np.std(feature_data))
+            if std == 0:
+                std = 1.0
+            nonzero_data = feature_data[feature_data != 0]
+        else:
+            nonzero_data = feature_data[feature_data != 0]
+            if len(nonzero_data) > 0:
+                mean = float(np.mean(nonzero_data))
+                std = float(np.std(nonzero_data))
+            else:
+                mean = 0.0
+                std = 1.0
+        nonzero_ratio = len(nonzero_data) / len(feature_data) * 100
+        norm_stats[idx] = {'name': name, 'mean': mean, 'std': std}
+        print(f"   {name}: mean={mean:.6f}, std={std:.6f} (non-zero: {nonzero_ratio:.1f}%)")
+    return norm_stats, normalize_indices, normalize_names
+
+
+def _save_train_dataset(
+    train_tensors: dict, norm_stats: Dict[int, Dict[str, float]],
+    normalize_indices: List[int], normalize_names: List[str],
+    output_dir: Path, data_type: str, cache_type: str, mode_suffix: str,
+    cache_path: str, num_libs: int, num_features: int,
+    train_folders: List[Path], include_parasitic_cap: bool, voltage_mode: str,
+    slew_mode: str, topology_suffix: str, include_zeros_in_norm: bool,
+) -> Path:
+    """Build the train_data dict + torch.save, return the file path."""
+    train_path = output_dir / f"train_{data_type}_{cache_type}{mode_suffix}.pth"
+    print(f"\n💾 Saving train dataset: {train_path}")
+
+    train_data = {
+        'node_features': torch.from_numpy(train_tensors['node_features']),
+        'outputs': torch.from_numpy(train_tensors['outputs']),
+        'node_slices': torch.from_numpy(train_tensors['node_slices']),
+        'cell_names': train_tensors['cell_names'],
+        'delay_types': train_tensors['delay_types'],
+        'output_names': train_tensors['output_names'],
+        'node_counts': train_tensors['task_node_counts'],
+        'num_tasks': train_tensors['num_tasks'],
+        'num_libs': num_libs,
+        'num_features': num_features,
+        'total_nodes': train_tensors['total_nodes'],
+        'format': 'unified_3d',
+        'process_node': 'TSMC',
+        'data_type': data_type,
+        'graph_mode': cache_type,
+        'cache_path': cache_path,
+        'train_corners': TRAIN_CORNERS,
+        'train_temperatures': TRAIN_TEMPERATURES,
+        'num_conditions': len(train_folders),
+        'include_parasitic_cap': include_parasitic_cap,
+        'voltage_mode': voltage_mode,
+        'slew_mode': slew_mode,
+        'topology_suffix': topology_suffix,
+        'excluded_cells': INTRA_TOPOLOGY_CELLS,
+        'norm_stats': {
+            'node_features': {
+                stats['name']: {'mean': stats['mean'], 'std': stats['std']}
+                for stats in norm_stats.values()
+            }
+        },
+        'normalize_indices': normalize_indices,
+        'normalize_names': normalize_names,
+        'normalize_nonzero_only': not include_zeros_in_norm,
+        'include_zeros_in_norm': include_zeros_in_norm,
+    }
+    torch.save(train_data, train_path)
+    print(f"   ✅ Saved: {train_path}")
+    print(f"   node_features: {train_data['node_features'].shape}")
+    print(f"   outputs: {train_data['outputs'].shape}")
+    return train_path
+
+
+def _load_existing_train_for_skip(
+    output_dir: Path, data_type: str, cache_type: str, mode_suffix: str,
+) -> Tuple[Path, Optional[int]]:
+    """When --skip_train, re-derive num_libs from the existing saved train .pth
+    (only num_libs is needed downstream; norm_stats are re-read into the dict
+    but not actually used by the test step). Returns (train_path, num_libs).
+    """
+    train_path = output_dir / f"train_{data_type}_{cache_type}{mode_suffix}.pth"
+    if not train_path.exists():
+        print(f"❌ Train data not found: {train_path}")
+        return train_path, None
+    train_data = torch.load(train_path, weights_only=False)
+    num_libs = train_data.get('num_libs', 61)
+    return train_path, num_libs
+
+
+# ============================================================================
+# Test data: extract partials → merge per cell
+# ============================================================================
+
+def _extract_test_partials(
+    test_folders: List[Path], topology_cache, cache_type: str, data_type: str,
+    temp_dir: Path, include_parasitic_cap: bool, voltage_mode: str,
+    temperature_mode: str, slew_mode: str,
+) -> set:
+    """Step 1: per test folder, compute samples and dump per-cell partial .pth files
+    into temp_dir. Returns the set of all cell_names seen.
+    """
+    all_cell_names: set = set()
+    print(f"\n📂 Step 1: Processing folders and saving partial files...")
+
+    for dir_idx, folder in enumerate(test_folders):
+        corner, temperature, is_variant = parse_tsmc_folder_name(folder.name)
+        process_params = get_abc_parameters(corner, temperature)
+
+        variant_tag = " [variant]" if is_variant else ""
+        print(f"\n[{dir_idx+1}/{len(test_folders)}] Processing {folder.name}{variant_tag}")
+
+        lib_files = sorted(folder.glob("*.lib"))
+        if not lib_files:
+            print(f"   ⚠️  No .lib files found, skipping...")
+            continue
+
+        all_samples_per_lib, num_tasks_dir = process_directory_for_unified(
+            folder, topology_cache, cache_type, process_params, data_type,
+            include_parasitic_cap=include_parasitic_cap, voltage_mode=voltage_mode,
+            temperature_mode=temperature_mode, slew_mode=slew_mode
+        )
+        print(f"   ✓ {num_tasks_dir} tasks from {len(lib_files)} lib files")
+
+        folder_samples_by_cell = defaultdict(list)
+        for task_idx in range(num_tasks_dir):
+            samples_by_lib = {}
+            valid = True
+            cell_name = None
+            for lib_idx in range(len(lib_files)):
+                if lib_idx < len(all_samples_per_lib) and task_idx < len(all_samples_per_lib[lib_idx]):
+                    sample = all_samples_per_lib[lib_idx][task_idx]
+                    samples_by_lib[lib_idx] = sample
+                    if cell_name is None:
+                        cell_name = sample['cell_name']
+                else:
+                    valid = False
+                    break
+            if valid and len(samples_by_lib) == len(lib_files) and cell_name:
+                folder_samples_by_cell[cell_name].append({
+                    'dir_name': folder.name,
+                    'samples_by_lib': samples_by_lib
+                })
+                all_cell_names.add(cell_name)
+
+        for cell_name, tasks in folder_samples_by_cell.items():
+            partial_path = temp_dir / f"{cell_name}_partial_{dir_idx:04d}.pth"
+            torch.save(tasks, partial_path)
+
+        del all_samples_per_lib, folder_samples_by_cell
+        gc.collect()
+
+    print(f"\n   ✅ Processed {len(test_folders)} folders")
+    print(f"   ✅ Found {len(all_cell_names)} unique cells")
+    return all_cell_names
+
+
+def _merge_partials_for_one_cell(
+    cell_name: str, temp_dir: Path, test_output_dir: Path,
+    num_features: int, include_parasitic_cap: bool,
+    voltage_mode: str, slew_mode: str, topology_suffix: str,
+    include_zeros_in_norm: bool,
+) -> bool:
+    """Load all partials for `cell_name`, build the per-cell 3-D tensor and save it.
+    Returns True if saved, False if skipped (no partials / no tasks)."""
+    partial_files = sorted(temp_dir.glob(f"{cell_name}_partial_*.pth"))
+    if not partial_files:
+        return False
+
+    all_tasks = []
+    for pf in partial_files:
+        tasks = torch.load(pf, weights_only=False)
+        all_tasks.extend(tasks)
+        pf.unlink()
+
+    if len(all_tasks) == 0:
+        return False
+
+    first_task = all_tasks[0]
+    num_libs_cell = len(first_task['samples_by_lib'])
+    num_tasks = len(all_tasks)
+
+    task_node_counts = []
+    delay_types = []
+    output_names = []
+    for task in all_tasks:
+        sample = task['samples_by_lib'][0]
+        task_node_counts.append(sample['num_nodes'])
+        delay_types.append(sample.get('delay_type', 'rise'))
+        output_names.append(sample.get('output_name', ''))
+
+    total_nodes = sum(task_node_counts)
+    node_slices = np.zeros(num_tasks + 1, dtype=np.int64)
+    node_slices[1:] = np.cumsum(task_node_counts)
+
+    node_features = np.zeros((num_libs_cell, total_nodes, num_features), dtype=np.float32)
+    outputs = np.zeros((num_libs_cell, num_tasks), dtype=np.float32)
+
+    for task_idx, task in enumerate(all_tasks):
+        samples_by_lib = task['samples_by_lib']
+        node_start = node_slices[task_idx]
+        node_end = node_slices[task_idx + 1]
+        for lib_idx, sample in samples_by_lib.items():
+            nf = sample['node_features']
+            if isinstance(nf, torch.Tensor):
+                nf = nf.cpu().numpy()
+            node_features[lib_idx, node_start:node_end, :] = nf
+            out = sample['output']
+            if isinstance(out, torch.Tensor):
+                out = out.item()
+            outputs[lib_idx, task_idx] = out
+
+    cell_path = test_output_dir / f"{cell_name}.pth"
+    cell_data = {
+        'node_features': torch.from_numpy(node_features),
+        'outputs': torch.from_numpy(outputs),
+        'node_slices': torch.from_numpy(node_slices),
+        'delay_types': delay_types,
+        'output_names': output_names,
+        'num_tasks': num_tasks,
+        'num_libs': num_libs_cell,
+        'num_features': num_features,
+        'total_nodes': total_nodes,
+        'cell_name': cell_name,
+        'format': 'unified_3d',
+        'include_parasitic_cap': include_parasitic_cap,
+        'voltage_mode': voltage_mode,
+        'slew_mode': slew_mode,
+        'topology_suffix': topology_suffix,
+        'normalize_nonzero_only': not include_zeros_in_norm,
+        'include_zeros_in_norm': include_zeros_in_norm,
+    }
+    torch.save(cell_data, cell_path)
+
+    del all_tasks, node_features, outputs, cell_data
+    gc.collect()
+    return True
+
+
+def _merge_all_test_partials(
+    all_cell_names: set, temp_dir: Path, test_output_dir: Path,
+    num_features: int, include_parasitic_cap: bool,
+    voltage_mode: str, slew_mode: str, topology_suffix: str,
+    include_zeros_in_norm: bool,
+) -> int:
+    """Step 2: per cell, merge its partials into a per-cell 3-D .pth.
+    Returns the number of cells successfully saved."""
+    print(f"\n📦 Step 2: Merging partial files into final .pth files...")
+    print(f"   Output directory: {test_output_dir}")
+
+    saved_count = 0
+    sorted_cells = sorted(all_cell_names)
+    for cell_idx, cell_name in enumerate(sorted_cells):
+        ok = _merge_partials_for_one_cell(
+            cell_name, temp_dir, test_output_dir,
+            num_features, include_parasitic_cap,
+            voltage_mode, slew_mode, topology_suffix,
+            include_zeros_in_norm,
+        )
+        if ok:
+            saved_count += 1
+        if (cell_idx + 1) % 10 == 0:
+            print(f"   Processed {cell_idx + 1}/{len(sorted_cells)} cells...")
+
+    try:
+        temp_dir.rmdir()
+    except OSError:
+        pass
+
+    print(f"   ✅ Saved {saved_count} cell .pth files")
+    return saved_count
+
+
+# ============================================================================
+# Orchestrator
+# ============================================================================
+
 def build_unified_datasets(
     cache_path: str,
     cache_type: str,
@@ -542,511 +1037,108 @@ def build_unified_datasets(
                    'related_pin_only' applies input_slew only to related_pin node/connected MOS
     """
     num_features = 12 if include_parasitic_cap else 11
-    print("=" * 80)
-    print("BUILDING TSMC GNN DATASET - UNIFIED 3D FORMAT")
-    print("=" * 80)
-    print(f"Cache path: {cache_path}")
-    print(f"Cache type: {cache_type}")
-    print(f"Lib base path: {lib_base_path}")
-    print(f"Output dir: {output_dir}")
-    print(f"Data type: {data_type}")
-    print(f"Include parasitic cap: {include_parasitic_cap}")
-    print(f"Voltage mode: {voltage_mode}")
-    print(f"Temperature mode: {temperature_mode}")
-    print(f"Slew mode: {slew_mode}")
-    print(f"Include zeros in norm: {include_zeros_in_norm} ({'original' if include_zeros_in_norm else 'norm2'})")
-    print(f"Topology suffix: '{topology_suffix}'")
-    print(f"Node features: {num_features}D ({'7 base + 4 process + 1 cap' if include_parasitic_cap else '7 base + 4 process'})")
-    print(f"\nTrain temperatures: {TRAIN_TEMPERATURES}")
-    print(f"Test temperatures: {TEST_TEMPERATURES}")
-    print(f"Train corners: {TRAIN_CORNERS}")
-    print(f"\n⚠️  Excluding INTRA_TOPOLOGY_CELLS from train data:")
-    for cell in INTRA_TOPOLOGY_CELLS:
-        print(f"   - {cell}")
-    print("=" * 80)
 
-    # Load topology cache
+    _print_config_banner(
+        cache_path, cache_type, lib_base_path, output_dir, data_type,
+        include_parasitic_cap, voltage_mode, temperature_mode, slew_mode,
+        include_zeros_in_norm, topology_suffix, num_features,
+    )
+
     print(f"\n📦 Loading topology cache...")
     topology_cache = torch.load(cache_path, weights_only=False)
     print(f"   ✓ Loaded {len(topology_cache)} cells")
 
     lib_base_path = Path(lib_base_path)
-    output_dir = Path(output_dir)
+    output_dir, mode_suffix = _setup_paths_and_suffix(
+        output_dir, include_parasitic_cap,
+        voltage_mode, temperature_mode, slew_mode, topology_suffix,
+    )
 
-    # Use subdirectory for parasitic cap version to avoid overwriting standard datasets
-    if include_parasitic_cap:
-        output_dir = output_dir / "with_parasitic_cap"
-        print(f"   Using subdirectory for 12D features: {output_dir}")
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Voltage mode suffix for output filenames (only add suffix for non-default mode)
-    voltage_suffix = f"_{voltage_mode}" if voltage_mode != 'all_nodes' else ""
-    # Temperature mode suffix for output filenames (only add suffix for non-default mode)
-    temperature_suffix = f"_{temperature_mode}" if temperature_mode != 'mos_only' else ""
-    # Slew mode suffix for output filenames (only add suffix for non-default mode)
-    slew_suffix = "_relpin" if slew_mode == 'related_pin_only' else ""
-    # Combined suffix for output filenames (includes topology options like _weighted, _inputport, _gatectrl)
-    mode_suffix = f"{topology_suffix}{voltage_suffix}{temperature_suffix}{slew_suffix}"
-
-    # Check expected train folders — only enforced when we actually use them.
+    # ----- Validate folders -----
     # With --skip_train the train-folder discovery is informational; missing
     # folders should not abort the build (e.g., test-only PT corpora like the
     # _x10 seq libs do not ship comb train folders).
     if not skip_train:
         print(f"\n🔍 Checking expected train folders (5 corners × 6 temps = 30)...")
         train_folders, missing_train = get_expected_train_folders(lib_base_path)
-
         if missing_train:
             print(f"\n❌ ERROR: Missing {len(missing_train)} train folders!")
             for folder_name in missing_train:
                 print(f"      - {folder_name}")
             raise FileNotFoundError(f"Missing {len(missing_train)} required train folders")
-
         print(f"   ✅ All 30 train folders found!")
     else:
         print(f"\n(skip_train=True — train-folder discovery skipped)")
         train_folders = []
 
-    # Get test folders
     test_folders = get_test_folders(lib_base_path)
     print(f"   Found {len(test_folders)} test folders")
 
-    # ==================== PROCESS TRAIN DATA ====================
+    # ----- Train -----
+    train_path: Optional[Path] = None
     if not skip_train:
         print(f"\n{'='*80}")
         print("PROCESSING TRAIN DATA - UNIFIED 3D FORMAT")
         print(f"{'='*80}")
 
-        # Collect all tasks from all directories using list-based approach
-        # Same as build_gnn_dataset_stage_aware_cached_tsmc.py - preserves all samples
-        all_train_tasks = []  # List of {'samples_per_lib': [...], 'metadata': {...}}
-
-        num_libs = None  # Will be determined from first directory
-
-        for dir_idx, folder in enumerate(train_folders):
-            corner, temperature, _ = parse_tsmc_folder_name(folder.name)
-            process_params = get_abc_parameters(corner, temperature)
-
-            print(f"\n[{dir_idx+1}/{len(train_folders)}] Processing {folder.name} (corner={corner}, temp={temperature})")
-
-            lib_files = sorted(folder.glob("*.lib"))
-            if not lib_files:
-                print(f"   ⚠️  No .lib files found, skipping...")
-                continue
-
-            if num_libs is None:
-                num_libs = len(lib_files)
-                print(f"   Number of lib files (voltages): {num_libs}")
-            elif len(lib_files) != num_libs:
-                print(f"   ⚠️  Warning: Expected {num_libs} lib files, found {len(lib_files)}")
-
-            # Process all lib files and collect samples (list-based)
-            all_samples_per_lib, num_tasks_dir = process_directory_for_unified(
-                folder, topology_cache, cache_type, process_params, data_type,
-                include_parasitic_cap=include_parasitic_cap, voltage_mode=voltage_mode,
-                temperature_mode=temperature_mode, slew_mode=slew_mode
-            )
-
-            print(f"   ✓ {num_tasks_dir} tasks from {len(lib_files)} lib files")
-
-            # Add tasks from this directory
-            # Each task is indexed by position (same index = same timing entry across lib files)
-            # Exclude INTRA_TOPOLOGY_CELLS from training data
-            excluded_count = 0
-            for task_idx in range(num_tasks_dir):
-                samples_by_lib = {}
-                valid = True
-                for lib_idx in range(num_libs):
-                    if lib_idx < len(all_samples_per_lib) and task_idx < len(all_samples_per_lib[lib_idx]):
-                        samples_by_lib[lib_idx] = all_samples_per_lib[lib_idx][task_idx]
-                    else:
-                        valid = False
-                        break
-
-                if valid and len(samples_by_lib) == num_libs:
-                    # Check if cell is in INTRA_TOPOLOGY_CELLS - exclude from train
-                    cell_name = samples_by_lib[0]['cell_name']
-                    if cell_name in INTRA_TOPOLOGY_CELLS:
-                        excluded_count += 1
-                        continue  # Skip this cell for training
-
-                    all_train_tasks.append({
-                        'dir_name': folder.name,
-                        'corner': corner,
-                        'temperature': temperature,
-                        'samples_by_lib': samples_by_lib
-                    })
-
-            if excluded_count > 0:
-                print(f"   ⚠️  Excluded {excluded_count} tasks from INTRA_TOPOLOGY_CELLS")
-
-            gc.collect()
-
-        print(f"\n📊 Total tasks collected: {len(all_train_tasks)}")
-        print(f"   Number of libs (voltages): {num_libs}")
-
+        all_train_tasks, num_libs = _collect_train_tasks(
+            train_folders, topology_cache, cache_type, data_type,
+            include_parasitic_cap, voltage_mode, temperature_mode, slew_mode,
+        )
         if len(all_train_tasks) == 0:
             print("❌ No valid tasks found!")
             return
 
-        # Calculate total nodes and verify consistency
-        print(f"\n🔧 Validating task consistency...")
-
-        # Get node counts for each task (should be same across all libs)
-        task_node_counts = []
-        cell_names = []
-        delay_types = []
-        output_names = []
-
-        for task_info in all_train_tasks:
-            samples_by_lib = task_info['samples_by_lib']
-            sample = samples_by_lib[0]  # Use first lib's sample for metadata
-            task_node_counts.append(sample['num_nodes'])
-            cell_names.append(sample['cell_name'])
-            delay_types.append(sample['delay_type'])
-            output_names.append(sample['output_name'])
-
-        total_nodes = sum(task_node_counts)
-        num_tasks = len(all_train_tasks)
-        # num_features already defined at function start
-
-        print(f"   Total tasks: {num_tasks}")
-        print(f"   Total nodes: {total_nodes}")
-        print(f"   Num libs: {num_libs}")
-        print(f"   Features: {num_features}")
-
-        # Create node slices (shared across all libs)
-        node_slices = np.zeros(num_tasks + 1, dtype=np.int64)
-        node_slices[1:] = np.cumsum(task_node_counts)
-
-        # Allocate 3D tensors
-        print(f"\n💾 Allocating 3D tensors...")
-        print(f"   node_features: [{num_libs}, {total_nodes}, {num_features}]")
-        print(f"   outputs: [{num_libs}, {num_tasks}]")
-
-        all_node_features = np.zeros((num_libs, total_nodes, num_features), dtype=np.float32)
-        all_outputs = np.zeros((num_libs, num_tasks), dtype=np.float32)
-
-        # Fill tensors
-        print(f"\n📝 Filling tensors...")
-        for task_idx, task_info in enumerate(all_train_tasks):
-            if task_idx % 10000 == 0:
-                print(f"   Processing task {task_idx}/{num_tasks}...")
-
-            samples_by_lib = task_info['samples_by_lib']
-            node_start = node_slices[task_idx]
-            node_end = node_slices[task_idx + 1]
-
-            for lib_idx, sample in samples_by_lib.items():
-                node_features = sample['node_features']
-                if isinstance(node_features, torch.Tensor):
-                    node_features = node_features.cpu().numpy()
-
-                all_node_features[lib_idx, node_start:node_end, :] = node_features
-
-                output = sample['output']
-                if isinstance(output, torch.Tensor):
-                    output = output.item()
-                all_outputs[lib_idx, task_idx] = output
-
-        # Calculate normalization stats from train data
-        # include_zeros_in_norm=True: original method (include zeros in stats)
-        # include_zeros_in_norm=False: norm2 method (exclude zeros from stats)
-        norm_method = "all values" if include_zeros_in_norm else "non-zero values only"
-        print(f"\n📊 Calculating normalization statistics ({norm_method})...")
-        if include_parasitic_cap:
-            NORMALIZE_INDICES = [4, 5, 6, 10, 11]  # voltage, input_slew, output_load, temperature, parasitic_cap
-            NORMALIZE_NAMES = ['voltage', 'input_slew', 'output_load', 'temperature', 'parasitic_cap']
-        else:
-            NORMALIZE_INDICES = [4, 5, 6, 10]  # voltage, input_slew, output_load, temperature
-            NORMALIZE_NAMES = ['voltage', 'input_slew', 'output_load', 'temperature']
-
-        norm_stats = {}
-        for idx, name in zip(NORMALIZE_INDICES, NORMALIZE_NAMES):
-            feature_data = all_node_features[:, :, idx].flatten()
-
-            if include_zeros_in_norm:
-                # Original method: include zeros in stats calculation
-                mean = float(np.mean(feature_data))
-                std = float(np.std(feature_data))
-                if std == 0:
-                    std = 1.0  # Avoid division by zero
-                nonzero_data = feature_data[feature_data != 0]
-                nonzero_ratio = len(nonzero_data) / len(feature_data) * 100
-            else:
-                # Norm2 method: calculate stats from non-zero values only
-                nonzero_data = feature_data[feature_data != 0]
-                if len(nonzero_data) > 0:
-                    mean = float(np.mean(nonzero_data))
-                    std = float(np.std(nonzero_data))
-                else:
-                    mean = 0.0
-                    std = 1.0  # Avoid division by zero
-                nonzero_ratio = len(nonzero_data) / len(feature_data) * 100
-
-            norm_stats[idx] = {'name': name, 'mean': mean, 'std': std}
-            print(f"   {name}: mean={mean:.6f}, std={std:.6f} (non-zero: {nonzero_ratio:.1f}%)")
-
-        # NOTE: Normalization is NOT applied here - only stats are saved
-        # During training: normalized = (x - mean) / std for non-zero values, keep 0 as 0
-
-        # Save train dataset as single .pth file (same format as build_gnn_dataset_stage_aware_cached_tsmc.py)
-        # mode_suffix already defined above (combines voltage_suffix and temperature_suffix)
-        train_path = output_dir / f"train_{data_type}_{cache_type}{mode_suffix}.pth"
-        print(f"\n💾 Saving train dataset: {train_path}")
-
-        # Convert to torch tensors
-        node_features_tensor = torch.from_numpy(all_node_features)
-        outputs_tensor = torch.from_numpy(all_outputs)
-        node_slices_tensor = torch.from_numpy(node_slices)
-
-        train_data = {
-            'node_features': node_features_tensor,
-            'outputs': outputs_tensor,
-            'node_slices': node_slices_tensor,
-            'cell_names': cell_names,
-            'delay_types': delay_types,
-            'output_names': output_names,
-            'node_counts': task_node_counts,
-            'num_tasks': num_tasks,
-            'num_libs': num_libs,
-            'num_features': num_features,
-            'total_nodes': total_nodes,
-            'format': 'unified_3d',
-            'process_node': 'TSMC',
-            'data_type': data_type,
-            'graph_mode': cache_type,
-            'cache_path': cache_path,
-            'train_corners': TRAIN_CORNERS,
-            'train_temperatures': TRAIN_TEMPERATURES,
-            'num_conditions': len(train_folders),
-            'include_parasitic_cap': include_parasitic_cap,
-            'voltage_mode': voltage_mode,
-            'slew_mode': slew_mode,  # 'all' or 'related_pin_only'
-            'topology_suffix': topology_suffix,  # e.g., '_weighted_inputport'
-            'excluded_cells': INTRA_TOPOLOGY_CELLS,  # Cells excluded from training (for intra-topology test)
-            'norm_stats': {
-                'node_features': {stats['name']: {'mean': stats['mean'], 'std': stats['std']}
-                                  for idx, stats in norm_stats.items()}
-            },
-            'normalize_indices': NORMALIZE_INDICES,
-            'normalize_names': NORMALIZE_NAMES,
-            'normalize_nonzero_only': not include_zeros_in_norm,  # If include_zeros=True, normalize_nonzero_only=False (original); else True (norm2)
-            'include_zeros_in_norm': include_zeros_in_norm,  # Explicit flag for clarity
-        }
-
-        torch.save(train_data, train_path)
-        print(f"   ✅ Saved: {train_path}")
-        print(f"   node_features: {node_features_tensor.shape}")
-        print(f"   outputs: {outputs_tensor.shape}")
-
-        # Clean up train data
-        del all_node_features, all_outputs, node_features_tensor, outputs_tensor
-        del all_train_tasks
+        train_tensors = _allocate_and_fill_train_tensors(
+            all_train_tasks, num_libs, num_features,
+        )
+        norm_stats, normalize_indices, normalize_names = _compute_normalization_stats(
+            train_tensors['node_features'], include_parasitic_cap, include_zeros_in_norm,
+        )
+        train_path = _save_train_dataset(
+            train_tensors, norm_stats, normalize_indices, normalize_names,
+            output_dir, data_type, cache_type, mode_suffix,
+            cache_path, num_libs, num_features,
+            train_folders, include_parasitic_cap, voltage_mode,
+            slew_mode, topology_suffix, include_zeros_in_norm,
+        )
+        del train_tensors, all_train_tasks
         gc.collect()
-
     else:
         print(f"\n{'='*80}")
         print("SKIPPING TRAIN DATA PROCESSING (--skip_train)")
         print(f"{'='*80}")
-
-        # Load existing norm_stats from .pth file (mode_suffix already defined above)
-        train_path = output_dir / f"train_{data_type}_{cache_type}{mode_suffix}.pth"
-        if train_path.exists():
-            train_data = torch.load(train_path, weights_only=False)
-            norm_stats = {}
-            for idx, name in enumerate(['voltage', 'input_slew', 'output_load', 'temperature']):
-                if name in train_data.get('norm_stats', {}).get('node_features', {}):
-                    stats = train_data['norm_stats']['node_features'][name]
-                    norm_stats[[4, 5, 6, 10][idx]] = {'name': name, 'mean': stats['mean'], 'std': stats['std']}
-            num_libs = train_data.get('num_libs', 61)
-        else:
-            print(f"❌ Train data not found: {train_path}")
+        train_path, num_libs = _load_existing_train_for_skip(
+            output_dir, data_type, cache_type, mode_suffix,
+        )
+        if num_libs is None:
             return
 
-    # ==================== PROCESS TEST DATA ====================
+    # ----- Test -----
     print(f"\n{'='*80}")
     print("PROCESSING TEST DATA - MEMORY-EFFICIENT MODE (SAVE PER FOLDER)")
     print(f"{'='*80}")
 
-    # Create output and temp directories (mode_suffix already defined above)
     test_output_dir = output_dir / f"test_by_{data_type}_{cache_type}{mode_suffix}"
     test_output_dir.mkdir(parents=True, exist_ok=True)
     temp_dir = test_output_dir / ".temp_partials"
     temp_dir.mkdir(parents=True, exist_ok=True)
 
-    # Track which cells we've seen
-    all_cell_names = set()
+    all_cell_names = _extract_test_partials(
+        test_folders, topology_cache, cache_type, data_type, temp_dir,
+        include_parasitic_cap, voltage_mode, temperature_mode, slew_mode,
+    )
+    _merge_all_test_partials(
+        all_cell_names, temp_dir, test_output_dir,
+        num_features, include_parasitic_cap,
+        voltage_mode, slew_mode, topology_suffix, include_zeros_in_norm,
+    )
 
-    # Step 1: Process each folder and save partial files immediately
-    print(f"\n📂 Step 1: Processing folders and saving partial files...")
-
-    for dir_idx, folder in enumerate(test_folders):
-        corner, temperature, is_variant = parse_tsmc_folder_name(folder.name)
-        process_params = get_abc_parameters(corner, temperature)
-
-        variant_tag = " [variant]" if is_variant else ""
-        print(f"\n[{dir_idx+1}/{len(test_folders)}] Processing {folder.name}{variant_tag}")
-
-        lib_files = sorted(folder.glob("*.lib"))
-        if not lib_files:
-            print(f"   ⚠️  No .lib files found, skipping...")
-            continue
-
-        # Process all lib files (list-based)
-        all_samples_per_lib, num_tasks_dir = process_directory_for_unified(
-            folder, topology_cache, cache_type, process_params, data_type,
-            include_parasitic_cap=include_parasitic_cap, voltage_mode=voltage_mode,
-            temperature_mode=temperature_mode, slew_mode=slew_mode
-        )
-
-        print(f"   ✓ {num_tasks_dir} tasks from {len(lib_files)} lib files")
-
-        # Group by cell name for this folder only
-        folder_samples_by_cell = defaultdict(list)
-
-        for task_idx in range(num_tasks_dir):
-            samples_by_lib = {}
-            valid = True
-            cell_name = None
-
-            for lib_idx in range(len(lib_files)):
-                if lib_idx < len(all_samples_per_lib) and task_idx < len(all_samples_per_lib[lib_idx]):
-                    sample = all_samples_per_lib[lib_idx][task_idx]
-                    samples_by_lib[lib_idx] = sample
-                    if cell_name is None:
-                        cell_name = sample['cell_name']
-                else:
-                    valid = False
-                    break
-
-            if valid and len(samples_by_lib) == len(lib_files) and cell_name:
-                folder_samples_by_cell[cell_name].append({
-                    'dir_name': folder.name,
-                    'samples_by_lib': samples_by_lib
-                })
-                all_cell_names.add(cell_name)
-
-        # Save partial files for each cell in this folder
-        for cell_name, tasks in folder_samples_by_cell.items():
-            partial_path = temp_dir / f"{cell_name}_partial_{dir_idx:04d}.pth"
-            torch.save(tasks, partial_path)
-
-        # Clear memory for this folder
-        del all_samples_per_lib, folder_samples_by_cell
-        gc.collect()
-
-    print(f"\n   ✅ Processed {len(test_folders)} folders")
-    print(f"   ✅ Found {len(all_cell_names)} unique cells")
-
-    # Step 2: Merge partial files for each cell
-    print(f"\n📦 Step 2: Merging partial files into final .pth files...")
-    print(f"   Output directory: {test_output_dir}")
-
-    saved_count = 0
-    for cell_idx, cell_name in enumerate(sorted(all_cell_names)):
-        # Find all partial files for this cell
-        partial_files = sorted(temp_dir.glob(f"{cell_name}_partial_*.pth"))
-
-        if not partial_files:
-            continue
-
-        # Load and merge all partial data
-        all_tasks = []
-        for pf in partial_files:
-            tasks = torch.load(pf, weights_only=False)
-            all_tasks.extend(tasks)
-            # Delete partial file after loading
-            pf.unlink()
-
-        if len(all_tasks) == 0:
-            continue
-
-        # Determine num_libs from first task
-        first_task = all_tasks[0]
-        num_libs_cell = len(first_task['samples_by_lib'])
-        num_tasks = len(all_tasks)
-
-        # Calculate total nodes and collect metadata
-        task_node_counts = []
-        delay_types = []
-        output_names = []
-        for task in all_tasks:
-            sample = task['samples_by_lib'][0]
-            task_node_counts.append(sample['num_nodes'])
-            delay_types.append(sample.get('delay_type', 'rise'))
-            output_names.append(sample.get('output_name', ''))
-
-        total_nodes = sum(task_node_counts)
-        node_slices = np.zeros(num_tasks + 1, dtype=np.int64)
-        node_slices[1:] = np.cumsum(task_node_counts)
-
-        # Allocate arrays
-        node_features = np.zeros((num_libs_cell, total_nodes, num_features), dtype=np.float32)
-        outputs = np.zeros((num_libs_cell, num_tasks), dtype=np.float32)
-
-        # Fill arrays
-        for task_idx, task in enumerate(all_tasks):
-            samples_by_lib = task['samples_by_lib']
-            node_start = node_slices[task_idx]
-            node_end = node_slices[task_idx + 1]
-
-            for lib_idx, sample in samples_by_lib.items():
-                nf = sample['node_features']
-                if isinstance(nf, torch.Tensor):
-                    nf = nf.cpu().numpy()
-                node_features[lib_idx, node_start:node_end, :] = nf
-
-                out = sample['output']
-                if isinstance(out, torch.Tensor):
-                    out = out.item()
-                outputs[lib_idx, task_idx] = out
-
-        # Save as single .pth file per cell
-        cell_path = test_output_dir / f"{cell_name}.pth"
-        cell_data = {
-            'node_features': torch.from_numpy(node_features),
-            'outputs': torch.from_numpy(outputs),
-            'node_slices': torch.from_numpy(node_slices),
-            'delay_types': delay_types,
-            'output_names': output_names,
-            'num_tasks': num_tasks,
-            'num_libs': num_libs_cell,
-            'num_features': num_features,
-            'total_nodes': total_nodes,
-            'cell_name': cell_name,
-            'format': 'unified_3d',
-            'include_parasitic_cap': include_parasitic_cap,
-            'voltage_mode': voltage_mode,
-            'slew_mode': slew_mode,  # 'all' or 'related_pin_only'
-            'topology_suffix': topology_suffix,  # e.g., '_weighted_inputport'
-            'normalize_nonzero_only': not include_zeros_in_norm,  # If include_zeros=True, normalize_nonzero_only=False (original)
-            'include_zeros_in_norm': include_zeros_in_norm,  # Explicit flag for clarity
-        }
-        torch.save(cell_data, cell_path)
-        saved_count += 1
-
-        # Clear memory after each cell
-        del all_tasks, node_features, outputs, cell_data
-        gc.collect()
-
-        if (cell_idx + 1) % 10 == 0:
-            print(f"   Processed {cell_idx + 1}/{len(all_cell_names)} cells...")
-
-    # Clean up temp directory
-    try:
-        temp_dir.rmdir()
-    except:
-        pass  # Directory might not be empty if there were errors
-
-    print(f"   ✅ Saved {saved_count} cell .pth files")
-
-    # Summary
+    # ----- Summary -----
     print(f"\n{'='*80}")
     print("SUMMARY")
     print(f"{'='*80}")
-    if not skip_train:
+    if not skip_train and train_path is not None:
         print(f"Train: {train_path}")
     print(f"Test: {test_output_dir}")
     print(f"\n✅ Done!")

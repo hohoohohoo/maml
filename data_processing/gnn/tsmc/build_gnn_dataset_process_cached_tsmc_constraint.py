@@ -235,7 +235,7 @@ def process_directory_for_constraint(folder_path, topology_cache, cache_type, pr
 
 
 # ---------------------------------------------------------------------------
-# Train + test build, per category
+# Train tensor packing helpers
 # ---------------------------------------------------------------------------
 def _build_train_tensor(all_train_tasks: List[dict], num_libs: int, num_features: int):
     """Common 3D-tensor packing for one category's train tasks."""
@@ -291,6 +291,323 @@ def _compute_norm_stats(all_nf: np.ndarray, include_parasitic_cap: bool, include
     return stats, idxs, names
 
 
+# ---------------------------------------------------------------------------
+# Orchestrator helpers — setup / collect / save / extract / merge
+# ---------------------------------------------------------------------------
+
+def _print_config_banner(categories, cache_path, cache_type, lib_base_path, output_dir,
+                        include_parasitic_cap, voltage_mode, temperature_mode,
+                        slew_mode, topology_suffix) -> None:
+    print("=" * 80)
+    print("BUILDING TSMC GNN DATASET - CONSTRAINT LUTs")
+    print("=" * 80)
+    print(f"Categories          : {categories}")
+    print(f"Cache path          : {cache_path}")
+    print(f"Cache type          : {cache_type}")
+    print(f"Lib base path       : {lib_base_path}")
+    print(f"Output dir          : {output_dir}")
+    print(f"Include parasitic   : {include_parasitic_cap}")
+    print(f"Voltage / Temp mode : {voltage_mode} / {temperature_mode}")
+    print(f"Slew mode           : {slew_mode}   (related_pin_only recommended for constraint)")
+    print(f"Topology suffix     : '{topology_suffix}'")
+    print(f"\nTrain corners×temps  : {TRAIN_CORNERS} × {TRAIN_TEMPERATURES}")
+    print(f"Excluded from train  : {INTRA_TOPOLOGY_CELLS}")
+    print("=" * 80)
+
+
+def _setup_paths_and_suffix(output_dir, include_parasitic_cap, voltage_mode,
+                            temperature_mode, slew_mode, topology_suffix,
+                            rescale_constrained_to_load) -> Tuple[Path, str]:
+    output_dir = Path(output_dir)
+    if include_parasitic_cap:
+        output_dir = output_dir / "with_parasitic_cap"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    voltage_suffix     = f"_{voltage_mode}"     if voltage_mode     != 'all_nodes' else ""
+    temperature_suffix = f"_{temperature_mode}" if temperature_mode != 'mos_only'  else ""
+    slew_suffix        = "_relpin" if slew_mode == 'related_pin_only' else ""
+    # `_scaledload` marks PTHs whose constrained-slew axis was rescaled into the output_load (pF)
+    # scale so the pretrained cell-delay model can consume it without distribution shift.
+    scale_suffix       = "_scaledload" if rescale_constrained_to_load != 1.0 else ""
+    mode_suffix        = f"{topology_suffix}{voltage_suffix}{temperature_suffix}{slew_suffix}{scale_suffix}"
+    return output_dir, mode_suffix
+
+
+def _collect_train_tasks_per_category(
+    train_folders, topology_cache, cache_type, categories,
+    include_parasitic_cap, voltage_mode, temperature_mode, slew_mode,
+    rescale_constrained_to_load,
+) -> Tuple[Dict[str, list], Optional[int]]:
+    """Run process_directory_for_constraint over all train folders and fold the
+    per-lib results into per-category aligned task lists. Excludes
+    INTRA_TOPOLOGY_CELLS. Returns (all_train_tasks_per_cat, num_libs).
+    """
+    all_train_tasks_per_cat: Dict[str, list] = {cat: [] for cat in categories}
+    num_libs: Optional[int] = None
+
+    for d_idx, folder in enumerate(train_folders):
+        corner, temperature, _ = parse_tsmc_folder_name(folder.name)
+        process_params = get_abc_parameters(corner, temperature)
+        print(f"\n[{d_idx+1}/{len(train_folders)}] {folder.name} (corner={corner}, temp={temperature})")
+
+        lib_files = sorted(folder.glob("*.lib"))
+        if not lib_files:
+            print(f"   ⚠️  no .lib — skipping")
+            continue
+        if num_libs is None:
+            num_libs = len(lib_files)
+            print(f"   num libs (voltage points): {num_libs}")
+
+        samples_per_lib, num_tasks_dir = process_directory_for_constraint(
+            folder, topology_cache, cache_type, process_params, categories,
+            include_parasitic_cap=include_parasitic_cap, voltage_mode=voltage_mode,
+            temperature_mode=temperature_mode, slew_mode=slew_mode,
+            rescale_constrained_to_load=rescale_constrained_to_load,
+        )
+
+        for cat in categories:
+            added = excluded = 0
+            for ti in range(num_tasks_dir[cat]):
+                by_lib = {}
+                ok = True
+                for li in range(num_libs):
+                    if li < len(samples_per_lib[cat]) and ti < len(samples_per_lib[cat][li]):
+                        by_lib[li] = samples_per_lib[cat][li][ti]
+                    else:
+                        ok = False
+                        break
+                if not (ok and len(by_lib) == num_libs):
+                    continue
+                cell_name = by_lib[0]['cell_name']
+                if cell_name in INTRA_TOPOLOGY_CELLS:
+                    excluded += 1
+                    continue
+                all_train_tasks_per_cat[cat].append({
+                    'dir_name': folder.name, 'corner': corner,
+                    'temperature': temperature, 'samples_by_lib': by_lib,
+                })
+                added += 1
+            if added or excluded:
+                print(f"   [{cat:14s}] +{added:4d} tasks  (excluded {excluded})")
+        gc.collect()
+    return all_train_tasks_per_cat, num_libs
+
+
+def _save_train_for_category(
+    category, tasks, num_libs, num_features, output_dir: Path,
+    cache_type, mode_suffix, cache_path,
+    include_parasitic_cap, include_zeros_in_norm,
+    voltage_mode, slew_mode, topology_suffix, num_conditions,
+) -> Optional[Path]:
+    """Build train tensor + norm stats + save for a single constraint category."""
+    if not tasks:
+        print(f"\n⚠️  {category}: no train tasks — skipping save")
+        return None
+    print(f"\n📊 [{category}] {len(tasks)} train tasks")
+
+    all_nf, all_y, node_slices, cells, dtypes, onames, total_nodes = _build_train_tensor(
+        tasks, num_libs, num_features,
+    )
+    stats, idxs, names = _compute_norm_stats(all_nf, include_parasitic_cap, include_zeros_in_norm)
+
+    train_path = output_dir / f"train_{category}_{cache_type}{mode_suffix}.pth"
+    print(f"💾 saving {train_path}")
+    torch.save({
+        'node_features':  torch.from_numpy(all_nf),
+        'outputs':        torch.from_numpy(all_y),
+        'node_slices':    torch.from_numpy(node_slices),
+        'cell_names':     cells,
+        'delay_types':    dtypes,
+        'output_names':   onames,
+        'node_counts':    [s['num_nodes'] for ti in tasks for s in [ti['samples_by_lib'][0]]],
+        'num_tasks':      len(tasks),
+        'num_libs':       num_libs,
+        'num_features':   num_features,
+        'total_nodes':    total_nodes,
+        'format':         'unified_3d',
+        'process_node':   'TSMC',
+        'data_type':      category,                       # category as data_type
+        'data_family':    'constraint',                   # group tag
+        'graph_mode':     cache_type,
+        'cache_path':     cache_path,
+        'train_corners':  TRAIN_CORNERS,
+        'train_temperatures': TRAIN_TEMPERATURES,
+        'num_conditions': num_conditions,
+        'include_parasitic_cap': include_parasitic_cap,
+        'voltage_mode':   voltage_mode,
+        'slew_mode':      slew_mode,
+        'topology_suffix': topology_suffix,
+        'excluded_cells': INTRA_TOPOLOGY_CELLS,
+        'norm_stats': {
+            'node_features': {s['name']: {'mean': s['mean'], 'std': s['std']}
+                              for _, s in stats.items()}
+        },
+        'normalize_indices':     idxs,
+        'normalize_names':       names,
+        'normalize_nonzero_only': not include_zeros_in_norm,
+        'include_zeros_in_norm':  include_zeros_in_norm,
+        # Documentation breadcrumb for downstream consumers:
+        'constraint_axis_semantics': {
+            'feature_slot_5_input_slew':  'related_pin_transition (clock slew etc.)',
+            'feature_slot_6_output_load': 'constrained_pin_transition (data slew etc.)',
+        },
+    }, train_path)
+    print(f"   ✅ node_features {all_nf.shape}, outputs {all_y.shape}")
+
+    del all_nf, all_y
+    gc.collect()
+    return train_path
+
+
+def _extract_test_partials_constraint(
+    test_folders, topology_cache, cache_type, categories,
+    temp_dirs: Dict[str, Path],
+    include_parasitic_cap, voltage_mode, temperature_mode, slew_mode,
+    rescale_constrained_to_load,
+) -> Dict[str, set]:
+    """Step 1: per test folder, dump per-cat per-cell partial .pth files into
+    `temp_dirs[cat]`. Returns the set of cells seen per category."""
+    seen_cells_per_cat: Dict[str, set] = {cat: set() for cat in categories}
+
+    for d_idx, folder in enumerate(test_folders):
+        corner, temperature, is_variant = parse_tsmc_folder_name(folder.name)
+        process_params = get_abc_parameters(corner, temperature)
+        variant_tag = " [variant]" if is_variant else ""
+        print(f"\n[{d_idx+1}/{len(test_folders)}] {folder.name}{variant_tag}")
+        lib_files = sorted(folder.glob("*.lib"))
+        if not lib_files:
+            print(f"   ⚠️  no .lib — skipping")
+            continue
+
+        samples_per_lib, num_tasks_dir = process_directory_for_constraint(
+            folder, topology_cache, cache_type, process_params, categories,
+            include_parasitic_cap=include_parasitic_cap, voltage_mode=voltage_mode,
+            temperature_mode=temperature_mode, slew_mode=slew_mode,
+            rescale_constrained_to_load=rescale_constrained_to_load,
+        )
+        n_libs_dir = len(lib_files)
+
+        for cat in categories:
+            by_cell: Dict[str, list] = defaultdict(list)
+            for ti in range(num_tasks_dir[cat]):
+                by_lib = {}
+                ok = True
+                cell_name = None
+                for li in range(n_libs_dir):
+                    if li < len(samples_per_lib[cat]) and ti < len(samples_per_lib[cat][li]):
+                        s = samples_per_lib[cat][li][ti]
+                        by_lib[li] = s
+                        if cell_name is None:
+                            cell_name = s['cell_name']
+                    else:
+                        ok = False
+                        break
+                if ok and len(by_lib) == n_libs_dir and cell_name:
+                    by_cell[cell_name].append({'dir_name': folder.name, 'samples_by_lib': by_lib})
+                    seen_cells_per_cat[cat].add(cell_name)
+            for cell_name, tlist in by_cell.items():
+                torch.save(tlist, temp_dirs[cat] / f"{cell_name}_partial_{d_idx:04d}.pth")
+        del samples_per_lib
+        gc.collect()
+
+    return seen_cells_per_cat
+
+
+def _merge_one_cell_for_category(
+    cell_name: str, temp_dir: Path, test_dir: Path,
+    category, num_features, include_parasitic_cap, voltage_mode,
+    slew_mode, topology_suffix, include_zeros_in_norm,
+) -> bool:
+    """Load + merge all partials of `cell_name` into the per-cell .pth.
+    Returns True if saved."""
+    partials = sorted(temp_dir.glob(f"{cell_name}_partial_*.pth"))
+    if not partials:
+        return False
+
+    all_tasks = []
+    for pf in partials:
+        all_tasks.extend(torch.load(pf, weights_only=False))
+        pf.unlink()
+    if not all_tasks:
+        return False
+
+    num_libs_cell = len(all_tasks[0]['samples_by_lib'])
+    num_tasks = len(all_tasks)
+    tn = [t['samples_by_lib'][0]['num_nodes'] for t in all_tasks]
+    dt = [t['samples_by_lib'][0].get('delay_type', 'rise_transition') for t in all_tasks]
+    on = [t['samples_by_lib'][0].get('output_name', '') for t in all_tasks]
+    total_nodes = sum(tn)
+    ns = np.zeros(num_tasks + 1, dtype=np.int64)
+    ns[1:] = np.cumsum(tn)
+
+    nf = np.zeros((num_libs_cell, total_nodes, num_features), dtype=np.float32)
+    yy = np.zeros((num_libs_cell, num_tasks), dtype=np.float32)
+    for ti, t in enumerate(all_tasks):
+        a, b = ns[ti], ns[ti + 1]
+        for li, s in t['samples_by_lib'].items():
+            x = s['node_features']
+            if isinstance(x, torch.Tensor):
+                x = x.cpu().numpy()
+            nf[li, a:b, :] = x
+            yi = s['output']
+            if isinstance(yi, torch.Tensor):
+                yi = yi.item()
+            yy[li, ti] = yi
+
+    cell_data = {
+        'node_features':  torch.from_numpy(nf),
+        'outputs':        torch.from_numpy(yy),
+        'node_slices':    torch.from_numpy(ns),
+        'delay_types':    dt,
+        'output_names':   on,
+        'num_tasks':      num_tasks,
+        'num_libs':       num_libs_cell,
+        'num_features':   num_features,
+        'total_nodes':    total_nodes,
+        'cell_name':      cell_name,
+        'format':         'unified_3d',
+        'data_type':      category,
+        'data_family':    'constraint',
+        'include_parasitic_cap': include_parasitic_cap,
+        'voltage_mode':   voltage_mode,
+        'slew_mode':      slew_mode,
+        'topology_suffix': topology_suffix,
+        'normalize_nonzero_only': not include_zeros_in_norm,
+        'include_zeros_in_norm':  include_zeros_in_norm,
+    }
+    torch.save(cell_data, test_dir / f"{cell_name}.pth")
+    del all_tasks, nf, yy, cell_data
+    gc.collect()
+    return True
+
+
+def _merge_all_test_partials(
+    categories, seen_cells_per_cat, temp_dirs, test_dirs,
+    num_features, include_parasitic_cap, voltage_mode,
+    slew_mode, topology_suffix, include_zeros_in_norm,
+) -> None:
+    print(f"\n📦 Merging partials...")
+    for cat in categories:
+        saved = 0
+        cells_sorted = sorted(seen_cells_per_cat[cat])
+        for cn in cells_sorted:
+            ok = _merge_one_cell_for_category(
+                cn, temp_dirs[cat], test_dirs[cat], cat,
+                num_features, include_parasitic_cap, voltage_mode,
+                slew_mode, topology_suffix, include_zeros_in_norm,
+            )
+            if ok:
+                saved += 1
+        try:
+            temp_dirs[cat].rmdir()
+        except OSError:
+            pass
+        print(f"   [{cat:14s}] saved {saved} per-cell .pth files in {test_dirs[cat]}")
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
 def build_constraint_datasets(
     cache_path: str,
     cache_type: str,
@@ -315,39 +632,20 @@ def build_constraint_datasets(
     categories = tuple(categories)
     num_features = 12 if include_parasitic_cap else 11
 
-    print("=" * 80)
-    print("BUILDING TSMC GNN DATASET - CONSTRAINT LUTs")
-    print("=" * 80)
-    print(f"Categories          : {categories}")
-    print(f"Cache path          : {cache_path}")
-    print(f"Cache type          : {cache_type}")
-    print(f"Lib base path       : {lib_base_path}")
-    print(f"Output dir          : {output_dir}")
-    print(f"Include parasitic   : {include_parasitic_cap}")
-    print(f"Voltage / Temp mode : {voltage_mode} / {temperature_mode}")
-    print(f"Slew mode           : {slew_mode}   (related_pin_only recommended for constraint)")
-    print(f"Topology suffix     : '{topology_suffix}'")
-    print(f"\nTrain corners×temps  : {TRAIN_CORNERS} × {TRAIN_TEMPERATURES}")
-    print(f"Excluded from train  : {INTRA_TOPOLOGY_CELLS}")
-    print("=" * 80)
+    _print_config_banner(
+        categories, cache_path, cache_type, lib_base_path, output_dir,
+        include_parasitic_cap, voltage_mode, temperature_mode, slew_mode, topology_suffix,
+    )
 
     print(f"\n📦 Loading topology cache...")
     topology_cache = torch.load(cache_path, weights_only=False)
     print(f"   ✓ {len(topology_cache)} cells in cache")
 
     lib_base_path = Path(lib_base_path)
-    output_dir = Path(output_dir)
-    if include_parasitic_cap:
-        output_dir = output_dir / "with_parasitic_cap"
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    voltage_suffix     = f"_{voltage_mode}"     if voltage_mode     != 'all_nodes' else ""
-    temperature_suffix = f"_{temperature_mode}" if temperature_mode != 'mos_only'  else ""
-    slew_suffix        = "_relpin" if slew_mode == 'related_pin_only' else ""
-    # `_scaledload` marks PTHs whose constrained-slew axis was rescaled into the output_load (pF)
-    # scale so the pretrained cell-delay model can consume it without distribution shift.
-    scale_suffix       = "_scaledload" if rescale_constrained_to_load != 1.0 else ""
-    mode_suffix        = f"{topology_suffix}{voltage_suffix}{temperature_suffix}{slew_suffix}{scale_suffix}"
+    output_dir, mode_suffix = _setup_paths_and_suffix(
+        output_dir, include_parasitic_cap, voltage_mode, temperature_mode,
+        slew_mode, topology_suffix, rescale_constrained_to_load,
+    )
 
     if not skip_train:
         print(f"\n🔍 Checking train folders...")
@@ -361,126 +659,30 @@ def build_constraint_datasets(
     test_folders = get_test_folders(lib_base_path)
     print(f"   Found {len(test_folders)} test folders")
 
-    # ============================================================
-    # TRAIN
-    # ============================================================
+    # ---- Train ----
     num_libs: Optional[int] = None
     if not skip_train:
         print(f"\n{'='*80}\nPROCESSING TRAIN DATA — per category\n{'='*80}")
-
-        # all_train_tasks_per_cat[cat] = list of {'dir_name','corner','temperature','samples_by_lib'}
-        all_train_tasks_per_cat: Dict[str, list] = {cat: [] for cat in categories}
-
-        for d_idx, folder in enumerate(train_folders):
-            corner, temperature, _ = parse_tsmc_folder_name(folder.name)
-            process_params = get_abc_parameters(corner, temperature)
-            print(f"\n[{d_idx+1}/{len(train_folders)}] {folder.name} (corner={corner}, temp={temperature})")
-
-            lib_files = sorted(folder.glob("*.lib"))
-            if not lib_files:
-                print(f"   ⚠️  no .lib — skipping")
-                continue
-            if num_libs is None:
-                num_libs = len(lib_files)
-                print(f"   num libs (voltage points): {num_libs}")
-
-            samples_per_lib, num_tasks_dir = process_directory_for_constraint(
-                folder, topology_cache, cache_type, process_params, categories,
-                include_parasitic_cap=include_parasitic_cap, voltage_mode=voltage_mode,
-                temperature_mode=temperature_mode, slew_mode=slew_mode,
-                rescale_constrained_to_load=rescale_constrained_to_load,
-            )
-
-            for cat in categories:
-                added = excluded = 0
-                for ti in range(num_tasks_dir[cat]):
-                    by_lib = {}
-                    ok = True
-                    for li in range(num_libs):
-                        if li < len(samples_per_lib[cat]) and ti < len(samples_per_lib[cat][li]):
-                            by_lib[li] = samples_per_lib[cat][li][ti]
-                        else:
-                            ok = False; break
-                    if not (ok and len(by_lib) == num_libs):
-                        continue
-                    cell_name = by_lib[0]['cell_name']
-                    if cell_name in INTRA_TOPOLOGY_CELLS:
-                        excluded += 1
-                        continue
-                    all_train_tasks_per_cat[cat].append({
-                        'dir_name': folder.name, 'corner': corner,
-                        'temperature': temperature, 'samples_by_lib': by_lib,
-                    })
-                    added += 1
-                if added or excluded:
-                    print(f"   [{cat:14s}] +{added:4d} tasks  (excluded {excluded})")
-            gc.collect()
-
+        all_train_tasks_per_cat, num_libs = _collect_train_tasks_per_category(
+            train_folders, topology_cache, cache_type, categories,
+            include_parasitic_cap, voltage_mode, temperature_mode, slew_mode,
+            rescale_constrained_to_load,
+        )
         for cat in categories:
-            tasks = all_train_tasks_per_cat[cat]
-            if not tasks:
-                print(f"\n⚠️  {cat}: no train tasks — skipping save")
-                continue
-            print(f"\n📊 [{cat}] {len(tasks)} train tasks")
-
-            all_nf, all_y, node_slices, cells, dtypes, onames, total_nodes = _build_train_tensor(
-                tasks, num_libs, num_features)
-            stats, idxs, names = _compute_norm_stats(all_nf, include_parasitic_cap, include_zeros_in_norm)
-
-            train_path = output_dir / f"train_{cat}_{cache_type}{mode_suffix}.pth"
-            print(f"💾 saving {train_path}")
-            torch.save({
-                'node_features':  torch.from_numpy(all_nf),
-                'outputs':        torch.from_numpy(all_y),
-                'node_slices':    torch.from_numpy(node_slices),
-                'cell_names':     cells,
-                'delay_types':    dtypes,
-                'output_names':   onames,
-                'node_counts':    [s['num_nodes'] for ti in tasks for s in [ti['samples_by_lib'][0]]],
-                'num_tasks':      len(tasks),
-                'num_libs':       num_libs,
-                'num_features':   num_features,
-                'total_nodes':    total_nodes,
-                'format':         'unified_3d',
-                'process_node':   'TSMC',
-                'data_type':      cat,                          # category as data_type
-                'data_family':    'constraint',                 # group tag
-                'graph_mode':     cache_type,
-                'cache_path':     cache_path,
-                'train_corners':  TRAIN_CORNERS,
-                'train_temperatures': TRAIN_TEMPERATURES,
-                'num_conditions': len(train_folders),
-                'include_parasitic_cap': include_parasitic_cap,
-                'voltage_mode':   voltage_mode,
-                'slew_mode':      slew_mode,
-                'topology_suffix': topology_suffix,
-                'excluded_cells': INTRA_TOPOLOGY_CELLS,
-                'norm_stats': {
-                    'node_features': {s['name']: {'mean': s['mean'], 'std': s['std']}
-                                      for _, s in stats.items()}
-                },
-                'normalize_indices':     idxs,
-                'normalize_names':       names,
-                'normalize_nonzero_only': not include_zeros_in_norm,
-                'include_zeros_in_norm':  include_zeros_in_norm,
-                # Documentation breadcrumb for downstream consumers:
-                'constraint_axis_semantics': {
-                    'feature_slot_5_input_slew':  'related_pin_transition (clock slew etc.)',
-                    'feature_slot_6_output_load': 'constrained_pin_transition (data slew etc.)',
-                },
-            }, train_path)
-            print(f"   ✅ node_features {all_nf.shape}, outputs {all_y.shape}")
-
-            del all_nf, all_y; gc.collect()
-        del all_train_tasks_per_cat; gc.collect()
+            _save_train_for_category(
+                cat, all_train_tasks_per_cat[cat], num_libs, num_features, output_dir,
+                cache_type, mode_suffix, cache_path,
+                include_parasitic_cap, include_zeros_in_norm,
+                voltage_mode, slew_mode, topology_suffix, len(train_folders),
+            )
+        del all_train_tasks_per_cat
+        gc.collect()
     else:
         print("\nskip_train=True — train datasets unchanged")
         if num_libs is None:
             num_libs = 61
 
-    # ============================================================
-    # TEST — per cell, per category
-    # ============================================================
+    # ---- Test ----
     print(f"\n{'='*80}\nPROCESSING TEST DATA — per cell, per category\n{'='*80}")
 
     test_dirs = {cat: output_dir / f"test_by_{cat}_{cache_type}{mode_suffix}" for cat in categories}
@@ -488,110 +690,18 @@ def build_constraint_datasets(
     for d in list(test_dirs.values()) + list(temp_dirs.values()):
         d.mkdir(parents=True, exist_ok=True)
 
-    seen_cells_per_cat: Dict[str, set] = {cat: set() for cat in categories}
+    seen_cells_per_cat = _extract_test_partials_constraint(
+        test_folders, topology_cache, cache_type, categories,
+        temp_dirs, include_parasitic_cap, voltage_mode, temperature_mode,
+        slew_mode, rescale_constrained_to_load,
+    )
+    _merge_all_test_partials(
+        categories, seen_cells_per_cat, temp_dirs, test_dirs,
+        num_features, include_parasitic_cap, voltage_mode,
+        slew_mode, topology_suffix, include_zeros_in_norm,
+    )
 
-    for d_idx, folder in enumerate(test_folders):
-        corner, temperature, is_variant = parse_tsmc_folder_name(folder.name)
-        process_params = get_abc_parameters(corner, temperature)
-        variant_tag = " [variant]" if is_variant else ""
-        print(f"\n[{d_idx+1}/{len(test_folders)}] {folder.name}{variant_tag}")
-        lib_files = sorted(folder.glob("*.lib"))
-        if not lib_files:
-            print(f"   ⚠️  no .lib — skipping"); continue
-
-        samples_per_lib, num_tasks_dir = process_directory_for_constraint(
-            folder, topology_cache, cache_type, process_params, categories,
-            include_parasitic_cap=include_parasitic_cap, voltage_mode=voltage_mode,
-            temperature_mode=temperature_mode, slew_mode=slew_mode,
-            rescale_constrained_to_load=rescale_constrained_to_load,
-        )
-        n_libs_dir = len(lib_files)
-
-        for cat in categories:
-            by_cell: Dict[str, list] = defaultdict(list)
-            for ti in range(num_tasks_dir[cat]):
-                by_lib = {}
-                ok = True
-                cell_name = None
-                for li in range(n_libs_dir):
-                    if li < len(samples_per_lib[cat]) and ti < len(samples_per_lib[cat][li]):
-                        s = samples_per_lib[cat][li][ti]
-                        by_lib[li] = s
-                        if cell_name is None:
-                            cell_name = s['cell_name']
-                    else:
-                        ok = False; break
-                if ok and len(by_lib) == n_libs_dir and cell_name:
-                    by_cell[cell_name].append({'dir_name': folder.name, 'samples_by_lib': by_lib})
-                    seen_cells_per_cat[cat].add(cell_name)
-            for cell_name, tlist in by_cell.items():
-                torch.save(tlist, temp_dirs[cat] / f"{cell_name}_partial_{d_idx:04d}.pth")
-        del samples_per_lib; gc.collect()
-
-    # Merge partials per category × per cell
-    print(f"\n📦 Merging partials...")
-    for cat in categories:
-        saved = 0
-        cells_sorted = sorted(seen_cells_per_cat[cat])
-        for cn in cells_sorted:
-            partials = sorted(temp_dirs[cat].glob(f"{cn}_partial_*.pth"))
-            if not partials:
-                continue
-            all_tasks = []
-            for pf in partials:
-                all_tasks.extend(torch.load(pf, weights_only=False))
-                pf.unlink()
-            if not all_tasks:
-                continue
-            num_libs_cell = len(all_tasks[0]['samples_by_lib'])
-            num_tasks = len(all_tasks)
-            tn = [t['samples_by_lib'][0]['num_nodes'] for t in all_tasks]
-            dt = [t['samples_by_lib'][0].get('delay_type', 'rise_transition') for t in all_tasks]
-            on = [t['samples_by_lib'][0].get('output_name', '') for t in all_tasks]
-            total_nodes = sum(tn)
-            ns = np.zeros(num_tasks + 1, dtype=np.int64); ns[1:] = np.cumsum(tn)
-            nf = np.zeros((num_libs_cell, total_nodes, num_features), dtype=np.float32)
-            yy = np.zeros((num_libs_cell, num_tasks), dtype=np.float32)
-            for ti, t in enumerate(all_tasks):
-                a, b = ns[ti], ns[ti + 1]
-                for li, s in t['samples_by_lib'].items():
-                    x = s['node_features']
-                    if isinstance(x, torch.Tensor): x = x.cpu().numpy()
-                    nf[li, a:b, :] = x
-                    yi = s['output']
-                    if isinstance(yi, torch.Tensor): yi = yi.item()
-                    yy[li, ti] = yi
-            cell_data = {
-                'node_features':  torch.from_numpy(nf),
-                'outputs':        torch.from_numpy(yy),
-                'node_slices':    torch.from_numpy(ns),
-                'delay_types':    dt,
-                'output_names':   on,
-                'num_tasks':      num_tasks,
-                'num_libs':       num_libs_cell,
-                'num_features':   num_features,
-                'total_nodes':    total_nodes,
-                'cell_name':      cn,
-                'format':         'unified_3d',
-                'data_type':      cat,
-                'data_family':    'constraint',
-                'include_parasitic_cap': include_parasitic_cap,
-                'voltage_mode':   voltage_mode,
-                'slew_mode':      slew_mode,
-                'topology_suffix': topology_suffix,
-                'normalize_nonzero_only': not include_zeros_in_norm,
-                'include_zeros_in_norm':  include_zeros_in_norm,
-            }
-            torch.save(cell_data, test_dirs[cat] / f"{cn}.pth")
-            saved += 1
-            del all_tasks, nf, yy, cell_data; gc.collect()
-        # remove empty temp dir
-        try:
-            temp_dirs[cat].rmdir()
-        except OSError:
-            pass
-        print(f"   [{cat:14s}] saved {saved} per-cell .pth files in {test_dirs[cat]}")
-
+    # ---- Summary ----
     print(f"\n{'='*80}\nSUMMARY\n{'='*80}")
     if not skip_train:
         for cat in categories:

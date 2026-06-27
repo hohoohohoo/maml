@@ -63,7 +63,7 @@ TEST_C_IDX  = [0, 1, 2]
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Enumeration / naming helpers (small, kept as top-level public API)
 # ---------------------------------------------------------------------------
 def temp_to_folder_str(temp: float) -> str:
     """`12.5` -> `'12p5'`, `-25` -> `'-25'`."""
@@ -254,40 +254,14 @@ def _process_directory_asap7(folder_path: Path, topology_cache: dict, cache_type
 
 
 # ---------------------------------------------------------------------------
-# Main orchestration
+# Setup / config helpers
 # ---------------------------------------------------------------------------
-def build_unified_datasets_2d_asap7(
-    cache_path: str,
-    cache_type: str,
-    lib_base_paths: List[str],
-    output_dir: str,
-    prefixes: List[str],
-    data_type: str = 'cell',
-    skip_train: bool = False,
-    voltage_mode: str = 'all_nodes',
-    include_zeros_in_norm: bool = False,
-    topology_suffix: str = '',
-    slew_mode: str = 'all',
-    sampling_ratio: float = 1.0,
-    max_test_tasks_per_cell: Optional[int] = None,
-    sampling_seed: int = 0,
-):
-    """
-    Build the 2-D V×T train + per-cell test datasets for ASAP7.
 
-    Args:
-        cache_path: topology cache .pth path
-        cache_type: 'stage_aware' or 'full_graph'
-        lib_base_paths: list of lib root dirs (e.g. ['.../processed', '.../processed_simple'])
-        output_dir: where to write `train_*_2d.pth` and `test_by_*_2d/`
-        prefixes: cell-type prefixes used in folder names (e.g. ['invbuf', 'simple'])
-        sampling_ratio: 0 < R <= 1, keep R fraction of aligned train tasks per corner
-        max_test_tasks_per_cell: optional cap on tasks emitted per test cell file
-    """
-    num_features = 11
-    num_train_temps = len(TRAIN_TEMPERATURES)
-    num_test_temps = len(TEST_TEMPERATURES)
-
+def _print_config_banner(
+    cache_path, cache_type, lib_base_paths, output_dir, prefixes, data_type,
+    voltage_mode, slew_mode, include_zeros_in_norm, topology_suffix,
+    sampling_ratio, max_test_tasks_per_cell, sampling_seed,
+) -> None:
     print('=' * 80)
     print('BUILDING ASAP7 GNN DATASET - 2-D V×T FORMAT')
     print('=' * 80)
@@ -313,306 +287,318 @@ def build_unified_datasets_2d_asap7(
         print(f'   - {cell}')
     print('=' * 80)
 
-    # ---- Load topology cache ----
-    print(f'\n📦 Loading topology cache...')
-    topology_cache = torch.load(cache_path, weights_only=False)
-    print(f'   ✓ Loaded {len(topology_cache)} cells')
 
-    lib_base_paths_p = [Path(p) for p in lib_base_paths]
+def _setup_paths_and_suffix(output_dir, voltage_mode, slew_mode, topology_suffix) -> Tuple[Path, str]:
     output_dir_p = Path(output_dir)
     output_dir_p.mkdir(parents=True, exist_ok=True)
-
     voltage_suffix = f'_{voltage_mode}' if voltage_mode != 'all_nodes' else ''
     slew_suffix = '_relpin' if slew_mode == 'related_pin_only' else ''
     mode_suffix = f'{topology_suffix}{voltage_suffix}{slew_suffix}'
+    return output_dir_p, mode_suffix
 
-    # ---- Enumerate folders ----
-    train_folders = enumerate_train_folders(lib_base_paths_p, prefixes)
-    test_folders = enumerate_test_folders(lib_base_paths_p, prefixes)
-    print(f'\n🔍 Discovered train folders: {len(train_folders)}')
-    print(f'🔍 Discovered test  folders: {len(test_folders)}')
-    if not train_folders and not skip_train:
-        raise RuntimeError(f'No train folders found under {lib_base_paths} for prefixes {prefixes}')
 
-    rng = random.Random(sampling_seed)
+# ---------------------------------------------------------------------------
+# Train data: collection + tensor build + save
+# ---------------------------------------------------------------------------
 
-    # ============================ TRAIN ============================
-    train_path = None
-    num_voltages_observed = None
+def _collect_all_train_tasks(
+    train_folders, topology_cache, cache_type, data_type,
+    voltage_mode, slew_mode, sampling_ratio, rng: random.Random,
+) -> Tuple[List[dict], Optional[int]]:
+    """For each (corner, temp) train folder, run _process_directory_asap7 and
+    fold per-lib tasks aligned by (volt_idx, temp_idx) into the V×T plane.
+    Applies per-corner `sampling_ratio` and excludes INTRA_TOPOLOGY_CELLS.
+    Returns (all_train_tasks, num_voltages_observed).
+    """
+    num_train_temps = len(TRAIN_TEMPERATURES)
 
-    if not skip_train:
-        print(f'\n{"=" * 80}')
-        print(f'PROCESSING TRAIN DATA (2-D V×T)')
-        print(f'{"=" * 80}')
+    # Group train folders by `{prefix}_{a}_{b}_{c}` corner label
+    corner_to_temp_folders: Dict[str, List[Tuple[float, Path, str, str]]] = defaultdict(list)
+    for (corner, temp, folder, prefix, base) in train_folders:
+        corner_key = f"{prefix}_{corner[0]}_{corner[1]}_{corner[2]}"
+        corner_to_temp_folders[corner_key].append((temp, folder, prefix, base))
+    temp_order = {t: i for i, t in enumerate(TRAIN_TEMPERATURES)}
+    for k in corner_to_temp_folders:
+        corner_to_temp_folders[k].sort(key=lambda x: temp_order.get(x[0], 999))
 
-        # Group train folders by (prefix, a, b, c) — including prefix so that
-        # invbuf_0_0_0 and simple_0_0_0 are independent corners (they characterize
-        # different cell families at the same physical process corner).
-        # Key is the human-readable string "{prefix}_{a}_{b}_{c}" used directly
-        # as the corner label in the saved dataset.
-        corner_to_temp_folders: Dict[str, List[Tuple[float, Path, str, str]]] = defaultdict(list)
-        for (corner, temp, folder, prefix, base) in train_folders:
-            corner_key = f"{prefix}_{corner[0]}_{corner[1]}_{corner[2]}"
-            corner_to_temp_folders[corner_key].append((temp, folder, prefix, base))
-        # Sort each corner's temps in TRAIN_TEMPERATURES order
-        temp_order = {t: i for i, t in enumerate(TRAIN_TEMPERATURES)}
-        for k in corner_to_temp_folders:
-            corner_to_temp_folders[k].sort(key=lambda x: temp_order.get(x[0], 999))
+    all_train_tasks: List[dict] = []
+    num_voltages_observed: Optional[int] = None
 
-        all_train_tasks = []
-        for corner_idx, corner in enumerate(sorted(corner_to_temp_folders.keys())):
-            tf_list = corner_to_temp_folders[corner]
-            if len(tf_list) != num_train_temps:
-                print(f'\n[Corner {corner_idx+1}/{len(corner_to_temp_folders)}] {corner} '
-                      f'— incomplete: {len(tf_list)}/{num_train_temps} temps, skipping')
+    sorted_corners = sorted(corner_to_temp_folders.keys())
+    for corner_idx, corner in enumerate(sorted_corners):
+        tf_list = corner_to_temp_folders[corner]
+        if len(tf_list) != num_train_temps:
+            print(f'\n[Corner {corner_idx+1}/{len(corner_to_temp_folders)}] {corner} '
+                  f'— incomplete: {len(tf_list)}/{num_train_temps} temps, skipping')
+            continue
+
+        print(f'\n[Corner {corner_idx+1}/{len(corner_to_temp_folders)}] {corner}')
+
+        samples_2d_per_temp: List[List[List[dict]]] = []
+        num_tasks_per_temp: List[int] = []
+        for (temp, folder, prefix, _base) in tf_list:
+            lib_files_check = sorted(folder.glob('*.lib'))
+            if not lib_files_check:
+                print(f'   [temp {temp}] {folder.name} — no .lib files, ABORT corner')
+                samples_2d_per_temp = []
+                break
+            lib_prefix = lib_files_check[0].stem.rsplit('_', 1)[0] + '_'
+            process_params = parse_process_conditions_from_filename(lib_prefix, is_test=False)
+
+            print(f'   [temp {temp:>6.1f}°C] {folder.name}', flush=True)
+
+            if num_voltages_observed is None:
+                num_voltages_observed = len(lib_files_check)
+                print(f'      Number of voltage lib files: {num_voltages_observed}')
+            elif len(lib_files_check) != num_voltages_observed:
+                print(f'      ⚠️ voltage axis mismatch ({len(lib_files_check)} vs '
+                      f'expected {num_voltages_observed}), skipping corner')
+                samples_2d_per_temp = []
+                break
+
+            all_samples_per_lib, num_tasks_dir = _process_directory_asap7(
+                folder, topology_cache, cache_type, process_params, data_type,
+                voltage_mode=voltage_mode, slew_mode=slew_mode,
+            )
+            print(f'      ✓ {num_tasks_dir} tasks from {len(lib_files_check)} lib files')
+            samples_2d_per_temp.append(all_samples_per_lib)
+            num_tasks_per_temp.append(num_tasks_dir)
+
+        if not samples_2d_per_temp:
+            continue
+
+        num_tasks_per_corner = min(num_tasks_per_temp) if num_tasks_per_temp else 0
+        if len(set(num_tasks_per_temp)) > 1:
+            print(f'   ⚠️ num_tasks varies across temps: {num_tasks_per_temp}, '
+                  f'taking min={num_tasks_per_corner}')
+
+        # First pass: collect candidate aligned task indices (cell-name & INTRA filter)
+        candidate_indices: List[int] = []
+        excluded_count = 0
+        skipped_mismatch = 0
+        for task_idx in range(num_tasks_per_corner):
+            cell_names_at_idx = set()
+            for temp_idx in range(num_train_temps):
+                per_lib_lists = samples_2d_per_temp[temp_idx]
+                if 0 < len(per_lib_lists) and task_idx < len(per_lib_lists[0]):
+                    cell_names_at_idx.add(per_lib_lists[0][task_idx]['cell_name'])
+            if len(cell_names_at_idx) != 1:
+                skipped_mismatch += 1
                 continue
-
-            print(f'\n[Corner {corner_idx+1}/{len(corner_to_temp_folders)}] {corner}')
-
-            samples_2d_per_temp: List[List[List[dict]]] = []
-            num_tasks_per_temp: List[int] = []
-            for (temp, folder, prefix, _base) in tf_list:
-                # Process this folder
-                # The lib filename prefix encodes the process indices
-                # parse it from the first lib name to get process_params accurately
-                lib_files_check = sorted(folder.glob('*.lib'))
-                if not lib_files_check:
-                    print(f'   [temp {temp}] {folder.name} — no .lib files, ABORT corner')
-                    samples_2d_per_temp = []
-                    break
-                lib_prefix = lib_files_check[0].stem.rsplit('_', 1)[0] + '_'   # e.g. invbuf_0_0_0_-25_
-                process_params = parse_process_conditions_from_filename(lib_prefix, is_test=False)
-
-                print(f'   [temp {temp:>6.1f}°C] {folder.name}', flush=True)
-
-                if num_voltages_observed is None:
-                    num_voltages_observed = len(lib_files_check)
-                    print(f'      Number of voltage lib files: {num_voltages_observed}')
-                elif len(lib_files_check) != num_voltages_observed:
-                    print(f'      ⚠️ voltage axis mismatch ({len(lib_files_check)} vs '
-                          f'expected {num_voltages_observed}), skipping corner')
-                    samples_2d_per_temp = []
-                    break
-
-                all_samples_per_lib, num_tasks_dir = _process_directory_asap7(
-                    folder, topology_cache, cache_type, process_params, data_type,
-                    voltage_mode=voltage_mode, slew_mode=slew_mode,
-                )
-                print(f'      ✓ {num_tasks_dir} tasks from {len(lib_files_check)} lib files')
-                samples_2d_per_temp.append(all_samples_per_lib)
-                num_tasks_per_temp.append(num_tasks_dir)
-
-            if not samples_2d_per_temp:
+            cell_name = cell_names_at_idx.pop()
+            if cell_name in INTRA_TOPOLOGY_CELLS:
+                excluded_count += 1
                 continue
+            candidate_indices.append(task_idx)
 
-            num_tasks_per_corner = min(num_tasks_per_temp) if num_tasks_per_temp else 0
-            if len(set(num_tasks_per_temp)) > 1:
-                print(f'   ⚠️ num_tasks varies across temps: {num_tasks_per_temp}, '
-                      f'taking min={num_tasks_per_corner}')
+        # Apply sampling_ratio at corner level
+        if sampling_ratio < 1.0 and candidate_indices:
+            n_keep = max(1, int(round(len(candidate_indices) * sampling_ratio)))
+            rng.shuffle(candidate_indices)
+            candidate_indices = sorted(candidate_indices[:n_keep])
 
-            corner_tasks_added = 0
-            excluded_count = 0
-            skipped_mismatch = 0
-
-            # First pass: build the candidate aligned task list, then subsample
-            candidate_indices = []
-            for task_idx in range(num_tasks_per_corner):
-                cell_names_at_idx = set()
-                for temp_idx in range(num_train_temps):
-                    per_lib_lists = samples_2d_per_temp[temp_idx]
-                    if 0 < len(per_lib_lists) and task_idx < len(per_lib_lists[0]):
-                        cell_names_at_idx.add(per_lib_lists[0][task_idx]['cell_name'])
-                if len(cell_names_at_idx) != 1:
-                    skipped_mismatch += 1
-                    continue
-                cell_name = cell_names_at_idx.pop()
-                if cell_name in INTRA_TOPOLOGY_CELLS:
-                    excluded_count += 1
-                    continue
-                candidate_indices.append(task_idx)
-
-            # Apply sampling_ratio at corner level
-            if sampling_ratio < 1.0 and candidate_indices:
-                n_keep = max(1, int(round(len(candidate_indices) * sampling_ratio)))
-                rng.shuffle(candidate_indices)
-                candidate_indices = sorted(candidate_indices[:n_keep])
-
-            for task_idx in candidate_indices:
-                samples_by_TV = {}
-                valid = True
-                for temp_idx in range(num_train_temps):
-                    per_lib_lists = samples_2d_per_temp[temp_idx]
-                    for volt_idx in range(num_voltages_observed):
-                        if volt_idx >= len(per_lib_lists) or task_idx >= len(per_lib_lists[volt_idx]):
-                            valid = False
-                            break
-                        samples_by_TV[(volt_idx, temp_idx)] = per_lib_lists[volt_idx][task_idx]
-                    if not valid:
+        # Build the (V, T) plane for each selected task
+        corner_tasks_added = 0
+        for task_idx in candidate_indices:
+            samples_by_TV = {}
+            valid = True
+            for temp_idx in range(num_train_temps):
+                per_lib_lists = samples_2d_per_temp[temp_idx]
+                for volt_idx in range(num_voltages_observed):
+                    if volt_idx >= len(per_lib_lists) or task_idx >= len(per_lib_lists[volt_idx]):
+                        valid = False
                         break
+                    samples_by_TV[(volt_idx, temp_idx)] = per_lib_lists[volt_idx][task_idx]
                 if not valid:
-                    skipped_mismatch += 1
-                    continue
+                    break
+            if not valid:
+                skipped_mismatch += 1
+                continue
+            all_train_tasks.append({
+                'corner': corner,
+                'samples_by_TV': samples_by_TV,
+            })
+            corner_tasks_added += 1
 
-                all_train_tasks.append({
-                    'corner': corner,   # already a "{prefix}_{a}_{b}_{c}" string
-                    'samples_by_TV': samples_by_TV,
-                })
-                corner_tasks_added += 1
+        print(f'   ✓ {corner_tasks_added} tasks added (after {sampling_ratio:.2f} sampling); '
+              f'{excluded_count} INTRA_TOPOLOGY excluded; '
+              f'{skipped_mismatch} skipped (mismatch)')
 
-            print(f'   ✓ {corner_tasks_added} tasks added (after {sampling_ratio:.2f} sampling); '
-                  f'{excluded_count} INTRA_TOPOLOGY excluded; '
-                  f'{skipped_mismatch} skipped (mismatch)')
-
-            del samples_2d_per_temp
-            gc.collect()
-
-        print(f'\n📊 Total train tasks collected: {len(all_train_tasks)}')
-        print(f'   num_voltages: {num_voltages_observed}, num_temps: {num_train_temps}')
-
-        if not all_train_tasks:
-            print('❌ No valid train tasks!')
-            return
-
-        # ---- Allocate + fill ----
-        task_node_counts, cell_names, delay_types, output_names, task_corners = [], [], [], [], []
-        for t in all_train_tasks:
-            sample0 = t['samples_by_TV'][(0, 0)]
-            task_node_counts.append(sample0['num_nodes'])
-            cell_names.append(sample0['cell_name'])
-            delay_types.append(sample0['delay_type'])
-            output_names.append(sample0['output_name'])
-            task_corners.append(t['corner'])
-
-        num_tasks = len(all_train_tasks)
-        total_nodes = sum(task_node_counts)
-        print(f'\n🔧 Train task metadata: {num_tasks} tasks, {total_nodes} total nodes')
-        print(f'💾 Allocating 4-D tensors:')
-        print(f'   node_features: [{num_voltages_observed}, {num_train_temps}, {total_nodes}, {num_features}]')
-        print(f'   outputs:       [{num_voltages_observed}, {num_train_temps}, {num_tasks}]')
-
-        node_slices = np.zeros(num_tasks + 1, dtype=np.int64)
-        node_slices[1:] = np.cumsum(task_node_counts)
-
-        all_node_features = np.zeros(
-            (num_voltages_observed, num_train_temps, total_nodes, num_features),
-            dtype=np.float32,
-        )
-        all_outputs = np.zeros(
-            (num_voltages_observed, num_train_temps, num_tasks),
-            dtype=np.float32,
-        )
-
-        print(f'\n📝 Filling tensors...')
-        for task_idx, t in enumerate(all_train_tasks):
-            if task_idx % 10000 == 0:
-                print(f'   Processing task {task_idx}/{num_tasks}...')
-            node_start = node_slices[task_idx]
-            node_end = node_slices[task_idx + 1]
-            for (v, temp_idx), sample in t['samples_by_TV'].items():
-                nf = sample['node_features']
-                if isinstance(nf, torch.Tensor):
-                    nf = nf.cpu().numpy()
-                all_node_features[v, temp_idx, node_start:node_end, :] = nf
-                out = sample['output']
-                if isinstance(out, torch.Tensor):
-                    out = out.item()
-                all_outputs[v, temp_idx, task_idx] = out
-
-        voltages = np.zeros(num_voltages_observed, dtype=np.float32)
-        for v in range(num_voltages_observed):
-            v_slice = all_node_features[v, 0, :, 4]
-            nz = v_slice[v_slice != 0]
-            voltages[v] = float(nz[0]) if len(nz) > 0 else 0.0
-        temperatures = np.array(TRAIN_TEMPERATURES, dtype=np.float32)
-
-        # ---- Norm stats ----
-        NORMALIZE_INDICES = [4, 5, 6, 10]
-        NORMALIZE_NAMES = ['voltage', 'input_slew', 'output_load', 'temperature']
-        print(f'\n📊 Calculating normalization statistics...')
-        norm_stats = {}
-        for idx, name in zip(NORMALIZE_INDICES, NORMALIZE_NAMES):
-            feature_data = all_node_features[:, :, :, idx].flatten()
-            if include_zeros_in_norm:
-                mean = float(np.mean(feature_data))
-                std = float(np.std(feature_data))
-                if std == 0:
-                    std = 1.0
-            else:
-                nz = feature_data[feature_data != 0]
-                if len(nz) > 0:
-                    mean = float(np.mean(nz))
-                    std = float(np.std(nz))
-                else:
-                    mean = 0.0
-                    std = 1.0
-            norm_stats[idx] = {'name': name, 'mean': mean, 'std': std}
-            print(f'   {name}: mean={mean:.6f}, std={std:.6f}')
-
-        # ---- Save train ----
-        sampling_tag = '' if sampling_ratio >= 1.0 else f'_samp{int(round(sampling_ratio*100)):02d}pct'
-        train_path = output_dir_p / f'train_{data_type}_{cache_type}{mode_suffix}{sampling_tag}_2d.pth'
-        print(f'\n💾 Saving train dataset: {train_path}')
-        train_data = {
-            'node_features': torch.from_numpy(all_node_features),
-            'outputs': torch.from_numpy(all_outputs),
-            'node_slices': torch.from_numpy(node_slices),
-            'voltages': torch.from_numpy(voltages),
-            'temperatures': torch.from_numpy(temperatures),
-            'cell_names': cell_names,
-            'delay_types': delay_types,
-            'output_names': output_names,
-            'task_corners': task_corners,
-            'node_counts': task_node_counts,
-            'num_tasks': num_tasks,
-            'num_voltages': num_voltages_observed,
-            'num_temps': num_train_temps,
-            'num_features': num_features,
-            'total_nodes': total_nodes,
-            'format': 'unified_4d_VT',
-            'process_node': 'ASAP7',
-            'data_type': data_type,
-            'graph_mode': cache_type,
-            'cache_path': cache_path,
-            'train_temperatures': TRAIN_TEMPERATURES,
-            'voltage_mode': voltage_mode,
-            'slew_mode': slew_mode,
-            'topology_suffix': topology_suffix,
-            'sampling_ratio': sampling_ratio,
-            'sampling_seed': sampling_seed,
-            'excluded_cells': INTRA_TOPOLOGY_CELLS,
-            'norm_stats': {
-                'node_features': {
-                    s['name']: {'mean': s['mean'], 'std': s['std']}
-                    for s in norm_stats.values()
-                }
-            },
-            'normalize_indices': NORMALIZE_INDICES,
-            'normalize_names': NORMALIZE_NAMES,
-            'normalize_nonzero_only': not include_zeros_in_norm,
-            'include_zeros_in_norm': include_zeros_in_norm,
-        }
-        torch.save(train_data, train_path)
-        print(f'   ✅ Saved: {train_path}')
-        print(f'   node_features: {train_data["node_features"].shape}')
-        print(f'   outputs:       {train_data["outputs"].shape}')
-
-        del all_node_features, all_outputs, all_train_tasks
+        del samples_2d_per_temp
         gc.collect()
-    else:
-        print('\nSKIPPING TRAIN (--skip_train)')
 
-    # ============================ TEST ============================
-    print(f'\n{"=" * 80}')
-    print('PROCESSING TEST DATA (2-D V×T)')
-    print(f'{"=" * 80}')
+    print(f'\n📊 Total train tasks collected: {len(all_train_tasks)}')
+    print(f'   num_voltages: {num_voltages_observed}, num_temps: {num_train_temps}')
+    return all_train_tasks, num_voltages_observed
 
-    test_output_dir = output_dir_p / f'test_by_{data_type}_{cache_type}{mode_suffix}_2d'
-    test_output_dir.mkdir(parents=True, exist_ok=True)
-    temp_dir = test_output_dir / '.temp_partials'
-    temp_dir.mkdir(parents=True, exist_ok=True)
 
-    all_cell_names = set()
+def _allocate_and_fill_train_tensors(
+    all_train_tasks: List[dict], num_voltages: int, num_train_temps: int, num_features: int,
+) -> dict:
+    task_node_counts, cell_names, delay_types, output_names, task_corners = [], [], [], [], []
+    for t in all_train_tasks:
+        sample0 = t['samples_by_TV'][(0, 0)]
+        task_node_counts.append(sample0['num_nodes'])
+        cell_names.append(sample0['cell_name'])
+        delay_types.append(sample0['delay_type'])
+        output_names.append(sample0['output_name'])
+        task_corners.append(t['corner'])
 
+    num_tasks = len(all_train_tasks)
+    total_nodes = sum(task_node_counts)
+    print(f'\n🔧 Train task metadata: {num_tasks} tasks, {total_nodes} total nodes')
+    print(f'💾 Allocating 4-D tensors:')
+    print(f'   node_features: [{num_voltages}, {num_train_temps}, {total_nodes}, {num_features}]')
+    print(f'   outputs:       [{num_voltages}, {num_train_temps}, {num_tasks}]')
+
+    node_slices = np.zeros(num_tasks + 1, dtype=np.int64)
+    node_slices[1:] = np.cumsum(task_node_counts)
+
+    all_node_features = np.zeros(
+        (num_voltages, num_train_temps, total_nodes, num_features), dtype=np.float32,
+    )
+    all_outputs = np.zeros((num_voltages, num_train_temps, num_tasks), dtype=np.float32)
+
+    print(f'\n📝 Filling tensors...')
+    for task_idx, t in enumerate(all_train_tasks):
+        if task_idx % 10000 == 0:
+            print(f'   Processing task {task_idx}/{num_tasks}...')
+        node_start = node_slices[task_idx]
+        node_end = node_slices[task_idx + 1]
+        for (v, temp_idx), sample in t['samples_by_TV'].items():
+            nf = sample['node_features']
+            if isinstance(nf, torch.Tensor):
+                nf = nf.cpu().numpy()
+            all_node_features[v, temp_idx, node_start:node_end, :] = nf
+            out = sample['output']
+            if isinstance(out, torch.Tensor):
+                out = out.item()
+            all_outputs[v, temp_idx, task_idx] = out
+
+    return {
+        'node_features': all_node_features,
+        'outputs': all_outputs,
+        'node_slices': node_slices,
+        'task_node_counts': task_node_counts,
+        'cell_names': cell_names,
+        'delay_types': delay_types,
+        'output_names': output_names,
+        'task_corners': task_corners,
+        'num_tasks': num_tasks,
+        'total_nodes': total_nodes,
+    }
+
+
+def _extract_voltage_axis(node_features: np.ndarray, num_voltages: int) -> np.ndarray:
+    """Read voltage value at (v, t=0) for each voltage slice (feature index 4 = voltage)."""
+    voltages = np.zeros(num_voltages, dtype=np.float32)
+    for v in range(num_voltages):
+        v_slice = node_features[v, 0, :, 4]
+        nz = v_slice[v_slice != 0]
+        voltages[v] = float(nz[0]) if len(nz) > 0 else 0.0
+    return voltages
+
+
+def _compute_normalization_stats(
+    node_features: np.ndarray, include_zeros_in_norm: bool,
+) -> Tuple[Dict[int, Dict[str, float]], List[int], List[str]]:
+    normalize_indices = [4, 5, 6, 10]
+    normalize_names = ['voltage', 'input_slew', 'output_load', 'temperature']
+    print(f'\n📊 Calculating normalization statistics...')
+
+    norm_stats: Dict[int, Dict[str, float]] = {}
+    for idx, name in zip(normalize_indices, normalize_names):
+        feature_data = node_features[:, :, :, idx].flatten()
+        if include_zeros_in_norm:
+            mean = float(np.mean(feature_data))
+            std = float(np.std(feature_data))
+            if std == 0:
+                std = 1.0
+        else:
+            nz = feature_data[feature_data != 0]
+            if len(nz) > 0:
+                mean = float(np.mean(nz))
+                std = float(np.std(nz))
+            else:
+                mean = 0.0
+                std = 1.0
+        norm_stats[idx] = {'name': name, 'mean': mean, 'std': std}
+        print(f'   {name}: mean={mean:.6f}, std={std:.6f}')
+    return norm_stats, normalize_indices, normalize_names
+
+
+def _save_train_dataset(
+    train_tensors: dict, norm_stats, normalize_indices, normalize_names,
+    output_dir: Path, data_type, cache_type, mode_suffix,
+    cache_path, num_voltages, num_train_temps, num_features,
+    voltage_mode, slew_mode, topology_suffix, sampling_ratio, sampling_seed,
+    include_zeros_in_norm,
+) -> Path:
+    voltages = _extract_voltage_axis(train_tensors['node_features'], num_voltages)
+    temperatures = np.array(TRAIN_TEMPERATURES, dtype=np.float32)
+
+    sampling_tag = '' if sampling_ratio >= 1.0 else f'_samp{int(round(sampling_ratio*100)):02d}pct'
+    train_path = output_dir / f'train_{data_type}_{cache_type}{mode_suffix}{sampling_tag}_2d.pth'
+    print(f'\n💾 Saving train dataset: {train_path}')
+
+    train_data = {
+        'node_features': torch.from_numpy(train_tensors['node_features']),
+        'outputs': torch.from_numpy(train_tensors['outputs']),
+        'node_slices': torch.from_numpy(train_tensors['node_slices']),
+        'voltages': torch.from_numpy(voltages),
+        'temperatures': torch.from_numpy(temperatures),
+        'cell_names': train_tensors['cell_names'],
+        'delay_types': train_tensors['delay_types'],
+        'output_names': train_tensors['output_names'],
+        'task_corners': train_tensors['task_corners'],
+        'node_counts': train_tensors['task_node_counts'],
+        'num_tasks': train_tensors['num_tasks'],
+        'num_voltages': num_voltages,
+        'num_temps': num_train_temps,
+        'num_features': num_features,
+        'total_nodes': train_tensors['total_nodes'],
+        'format': 'unified_4d_VT',
+        'process_node': 'ASAP7',
+        'data_type': data_type,
+        'graph_mode': cache_type,
+        'cache_path': cache_path,
+        'train_temperatures': TRAIN_TEMPERATURES,
+        'voltage_mode': voltage_mode,
+        'slew_mode': slew_mode,
+        'topology_suffix': topology_suffix,
+        'sampling_ratio': sampling_ratio,
+        'sampling_seed': sampling_seed,
+        'excluded_cells': INTRA_TOPOLOGY_CELLS,
+        'norm_stats': {
+            'node_features': {
+                s['name']: {'mean': s['mean'], 'std': s['std']}
+                for s in norm_stats.values()
+            }
+        },
+        'normalize_indices': normalize_indices,
+        'normalize_names': normalize_names,
+        'normalize_nonzero_only': not include_zeros_in_norm,
+        'include_zeros_in_norm': include_zeros_in_norm,
+    }
+    torch.save(train_data, train_path)
+    print(f'   ✅ Saved: {train_path}')
+    print(f'   node_features: {train_data["node_features"].shape}')
+    print(f'   outputs:       {train_data["outputs"].shape}')
+    return train_path
+
+
+# ---------------------------------------------------------------------------
+# Test data: extract partials → merge per cell
+# ---------------------------------------------------------------------------
+
+def _extract_test_partials(
+    test_folders, topology_cache, cache_type, data_type, temp_dir: Path,
+    voltage_mode, slew_mode,
+) -> set:
+    """Step 1: per test folder, compute samples and dump per-cell partial .pth files
+    into temp_dir. Returns the set of all cell_names seen.
+    """
+    all_cell_names: set = set()
     print(f'\n📂 Step 1: Processing test folders and saving partials...')
     for dir_idx, (corner, temperature, folder, prefix, _base) in enumerate(test_folders):
         lib_files_check = sorted(folder.glob('*.lib'))
@@ -662,145 +648,164 @@ def build_unified_datasets_2d_asap7(
         gc.collect()
 
     print(f'\n   ✅ Processed {len(test_folders)} folders, found {len(all_cell_names)} unique cells')
+    return all_cell_names
 
+
+def _merge_partials_for_one_cell(
+    cell_name, cell_idx, total_cells, temp_dir: Path, test_output_dir: Path,
+    num_features, voltage_mode, slew_mode, topology_suffix,
+    include_zeros_in_norm, max_test_tasks_per_cell, sampling_seed,
+) -> bool:
+    """Load all partials for `cell_name`, build the per-cell 2-D tensor and save it.
+    Honors `max_test_tasks_per_cell` by capping per-corner task counts (with a
+    deterministic per-cell rng for reproducibility). Returns True if saved.
+    """
+    partial_files = sorted(temp_dir.glob(f'{cell_name}_partial_*.pth'))
+    if not partial_files:
+        return False
+
+    flat_records = []
+    for pf in partial_files:
+        recs = torch.load(pf, weights_only=False)
+        flat_records.extend(recs)
+        pf.unlink()
+    if not flat_records:
+        return False
+
+    corners_seen = sorted({r['corner'] for r in flat_records})
+    temps_seen = sorted({r['temperature'] for r in flat_records})
+
+    ct_groups: Dict[Tuple[str, float], List[dict]] = defaultdict(list)
+    for r in flat_records:
+        ct_groups[(r['corner'], r['temperature'])].append(r)
+
+    counts, missing_ct = [], []
+    for c in corners_seen:
+        for t in temps_seen:
+            cnt = len(ct_groups.get((c, t), []))
+            counts.append(cnt)
+            if cnt == 0:
+                missing_ct.append((c, t))
+    if missing_ct:
+        print(f'   [{cell_idx+1}/{total_cells}] {cell_name}: '
+              f'missing (corner, temp) groups {missing_ct} — skipping cell')
+        return False
+
+    tasks_per_corner = min(counts)
+    if len(set(counts)) > 1:
+        print(f'   [{cell_idx+1}/{total_cells}] {cell_name}: '
+              f'task-count mismatch {sorted(set(counts))}, using min={tasks_per_corner}')
+
+    if max_test_tasks_per_cell is not None and tasks_per_corner > 0:
+        cap_per_corner = max(1, int(round(max_test_tasks_per_cell / max(len(corners_seen), 1))))
+        tasks_per_corner = min(tasks_per_corner, cap_per_corner)
+
+    num_corners = len(corners_seen)
+    num_temps = len(temps_seen)
+    num_libs_cell = len(flat_records[0]['samples_by_lib'])
+    num_tasks_cell = num_corners * tasks_per_corner
+
+    # Random per-corner subselection (deterministic per cell)
+    if max_test_tasks_per_cell is not None:
+        local_rng = random.Random(sampling_seed + cell_idx)
+        chosen_per_corner = {}
+        for c in corners_seen:
+            full_n = min(len(ct_groups[(c, t)]) for t in temps_seen)
+            idx_list = list(range(full_n))
+            local_rng.shuffle(idx_list)
+            chosen_per_corner[c] = sorted(idx_list[:tasks_per_corner])
+    else:
+        chosen_per_corner = {c: list(range(tasks_per_corner)) for c in corners_seen}
+
+    task_index_list = [(corner, ti) for corner in corners_seen for ti in chosen_per_corner[corner]]
+
+    task_node_counts, delay_types, output_names, task_corners_out = [], [], [], []
+    for (corner, ti) in task_index_list:
+        sample0 = ct_groups[(corner, temps_seen[0])][ti]['samples_by_lib'][0]
+        task_node_counts.append(sample0['num_nodes'])
+        delay_types.append(sample0['delay_type'])
+        output_names.append(sample0['output_name'])
+        task_corners_out.append(corner)
+
+    total_nodes_cell = sum(task_node_counts)
+    node_slices = np.zeros(num_tasks_cell + 1, dtype=np.int64)
+    node_slices[1:] = np.cumsum(task_node_counts)
+
+    node_features = np.zeros((num_libs_cell, num_temps, total_nodes_cell, num_features),
+                              dtype=np.float32)
+    outputs = np.zeros((num_libs_cell, num_temps, num_tasks_cell), dtype=np.float32)
+
+    for task_out_idx, (corner, ti) in enumerate(task_index_list):
+        node_start = node_slices[task_out_idx]
+        node_end = node_slices[task_out_idx + 1]
+        for temp_idx, temp in enumerate(temps_seen):
+            record = ct_groups[(corner, temp)][ti]
+            samples_by_lib = record['samples_by_lib']
+            for lib_idx, sample in samples_by_lib.items():
+                nf = sample['node_features']
+                if isinstance(nf, torch.Tensor):
+                    nf = nf.cpu().numpy()
+                node_features[lib_idx, temp_idx, node_start:node_end, :] = nf
+                out = sample['output']
+                if isinstance(out, torch.Tensor):
+                    out = out.item()
+                outputs[lib_idx, temp_idx, task_out_idx] = out
+
+    voltages = _extract_voltage_axis(node_features, num_libs_cell)
+    temperatures_arr = np.array(temps_seen, dtype=np.float32)
+
+    cell_path = test_output_dir / f'{cell_name}.pth'
+    cell_data = {
+        'node_features': torch.from_numpy(node_features),
+        'outputs': torch.from_numpy(outputs),
+        'node_slices': torch.from_numpy(node_slices),
+        'voltages': torch.from_numpy(voltages),
+        'temperatures': torch.from_numpy(temperatures_arr),
+        'delay_types': delay_types,
+        'output_names': output_names,
+        'task_corners': task_corners_out,
+        'cell_name': cell_name,
+        'num_tasks': num_tasks_cell,
+        'num_voltages': num_libs_cell,
+        'num_temps': num_temps,
+        'num_features': num_features,
+        'total_nodes': total_nodes_cell,
+        'format': 'unified_4d_VT',
+        'process_node': 'ASAP7',
+        'voltage_mode': voltage_mode,
+        'slew_mode': slew_mode,
+        'topology_suffix': topology_suffix,
+        'normalize_nonzero_only': not include_zeros_in_norm,
+        'include_zeros_in_norm': include_zeros_in_norm,
+        'max_test_tasks_per_cell': max_test_tasks_per_cell,
+    }
+    torch.save(cell_data, cell_path)
+
+    del node_features, outputs, flat_records, ct_groups
+    gc.collect()
+    return True
+
+
+def _merge_all_test_partials(
+    all_cell_names: set, temp_dir: Path, test_output_dir: Path,
+    num_features, voltage_mode, slew_mode, topology_suffix,
+    include_zeros_in_norm, max_test_tasks_per_cell, sampling_seed,
+) -> int:
     print(f'\n📦 Step 2: Merging partials into per-cell 2-D files...')
     print(f'   Output directory: {test_output_dir}')
+
     saved_count = 0
-
-    for cell_idx, cell_name in enumerate(sorted(all_cell_names)):
-        partial_files = sorted(temp_dir.glob(f'{cell_name}_partial_*.pth'))
-        if not partial_files:
-            continue
-
-        flat_records = []
-        for pf in partial_files:
-            recs = torch.load(pf, weights_only=False)
-            flat_records.extend(recs)
-            pf.unlink()
-        if not flat_records:
-            continue
-
-        corners_seen = sorted({r['corner'] for r in flat_records})
-        temps_seen = sorted({r['temperature'] for r in flat_records})
-
-        ct_groups: Dict[Tuple[str, float], List[dict]] = defaultdict(list)
-        for r in flat_records:
-            ct_groups[(r['corner'], r['temperature'])].append(r)
-
-        counts, missing_ct = [], []
-        for c in corners_seen:
-            for t in temps_seen:
-                cnt = len(ct_groups.get((c, t), []))
-                counts.append(cnt)
-                if cnt == 0:
-                    missing_ct.append((c, t))
-        if missing_ct:
-            print(f'   [{cell_idx+1}/{len(all_cell_names)}] {cell_name}: '
-                  f'missing (corner, temp) groups {missing_ct} — skipping cell')
-            continue
-
-        tasks_per_corner = min(counts)
-        if len(set(counts)) > 1:
-            print(f'   [{cell_idx+1}/{len(all_cell_names)}] {cell_name}: '
-                  f'task-count mismatch {sorted(set(counts))}, using min={tasks_per_corner}')
-
-        # Optional cap per corner (to bound per-cell file size)
-        if max_test_tasks_per_cell is not None and tasks_per_corner > 0:
-            cap_per_corner = max(1, int(round(max_test_tasks_per_cell / max(len(corners_seen), 1))))
-            tasks_per_corner = min(tasks_per_corner, cap_per_corner)
-
-        num_corners = len(corners_seen)
-        num_temps = len(temps_seen)
-        num_libs_cell = len(flat_records[0]['samples_by_lib'])
-        num_tasks_cell = num_corners * tasks_per_corner
-
-        # Pick the first `tasks_per_corner` records per (corner, temp)
-        # (random subsample of the corner if cap applied)
-        if max_test_tasks_per_cell is not None:
-            local_rng = random.Random(sampling_seed + cell_idx)
-            chosen_per_corner = {}
-            for c in corners_seen:
-                full_n = min(len(ct_groups[(c, t)]) for t in temps_seen)
-                idx_list = list(range(full_n))
-                local_rng.shuffle(idx_list)
-                chosen_per_corner[c] = sorted(idx_list[:tasks_per_corner])
-        else:
-            chosen_per_corner = {c: list(range(tasks_per_corner)) for c in corners_seen}
-
-        task_index_list = [(corner, ti) for corner in corners_seen for ti in chosen_per_corner[corner]]
-
-        task_node_counts, delay_types, output_names, task_corners_out = [], [], [], []
-        for (corner, ti) in task_index_list:
-            sample0 = ct_groups[(corner, temps_seen[0])][ti]['samples_by_lib'][0]
-            task_node_counts.append(sample0['num_nodes'])
-            delay_types.append(sample0['delay_type'])
-            output_names.append(sample0['output_name'])
-            task_corners_out.append(corner)
-
-        total_nodes_cell = sum(task_node_counts)
-        node_slices = np.zeros(num_tasks_cell + 1, dtype=np.int64)
-        node_slices[1:] = np.cumsum(task_node_counts)
-
-        node_features = np.zeros((num_libs_cell, num_temps, total_nodes_cell, num_features),
-                                  dtype=np.float32)
-        outputs = np.zeros((num_libs_cell, num_temps, num_tasks_cell), dtype=np.float32)
-
-        for task_out_idx, (corner, ti) in enumerate(task_index_list):
-            node_start = node_slices[task_out_idx]
-            node_end = node_slices[task_out_idx + 1]
-            for temp_idx, temp in enumerate(temps_seen):
-                record = ct_groups[(corner, temp)][ti]
-                samples_by_lib = record['samples_by_lib']
-                for lib_idx, sample in samples_by_lib.items():
-                    nf = sample['node_features']
-                    if isinstance(nf, torch.Tensor):
-                        nf = nf.cpu().numpy()
-                    node_features[lib_idx, temp_idx, node_start:node_end, :] = nf
-                    out = sample['output']
-                    if isinstance(out, torch.Tensor):
-                        out = out.item()
-                    outputs[lib_idx, temp_idx, task_out_idx] = out
-
-        voltages = np.zeros(num_libs_cell, dtype=np.float32)
-        for v in range(num_libs_cell):
-            v_slice = node_features[v, 0, :, 4]
-            nz = v_slice[v_slice != 0]
-            voltages[v] = float(nz[0]) if len(nz) > 0 else 0.0
-        temperatures_arr = np.array(temps_seen, dtype=np.float32)
-
-        cell_path = test_output_dir / f'{cell_name}.pth'
-        cell_data = {
-            'node_features': torch.from_numpy(node_features),
-            'outputs': torch.from_numpy(outputs),
-            'node_slices': torch.from_numpy(node_slices),
-            'voltages': torch.from_numpy(voltages),
-            'temperatures': torch.from_numpy(temperatures_arr),
-            'delay_types': delay_types,
-            'output_names': output_names,
-            'task_corners': task_corners_out,
-            'cell_name': cell_name,
-            'num_tasks': num_tasks_cell,
-            'num_voltages': num_libs_cell,
-            'num_temps': num_temps,
-            'num_features': num_features,
-            'total_nodes': total_nodes_cell,
-            'format': 'unified_4d_VT',
-            'process_node': 'ASAP7',
-            'voltage_mode': voltage_mode,
-            'slew_mode': slew_mode,
-            'topology_suffix': topology_suffix,
-            'normalize_nonzero_only': not include_zeros_in_norm,
-            'include_zeros_in_norm': include_zeros_in_norm,
-            'max_test_tasks_per_cell': max_test_tasks_per_cell,
-        }
-        torch.save(cell_data, cell_path)
-        saved_count += 1
-
-        del node_features, outputs, flat_records, ct_groups
-        gc.collect()
-
+    sorted_cells = sorted(all_cell_names)
+    for cell_idx, cell_name in enumerate(sorted_cells):
+        ok = _merge_partials_for_one_cell(
+            cell_name, cell_idx, len(sorted_cells), temp_dir, test_output_dir,
+            num_features, voltage_mode, slew_mode, topology_suffix,
+            include_zeros_in_norm, max_test_tasks_per_cell, sampling_seed,
+        )
+        if ok:
+            saved_count += 1
         if (cell_idx + 1) % 10 == 0:
-            print(f'   Processed {cell_idx+1}/{len(all_cell_names)} cells')
+            print(f'   Processed {cell_idx+1}/{len(sorted_cells)} cells')
 
     try:
         temp_dir.rmdir()
@@ -808,7 +813,112 @@ def build_unified_datasets_2d_asap7(
         pass
 
     print(f'   ✅ Saved {saved_count} cell files')
+    return saved_count
 
+
+# ---------------------------------------------------------------------------
+# Main orchestration
+# ---------------------------------------------------------------------------
+def build_unified_datasets_2d_asap7(
+    cache_path: str,
+    cache_type: str,
+    lib_base_paths: List[str],
+    output_dir: str,
+    prefixes: List[str],
+    data_type: str = 'cell',
+    skip_train: bool = False,
+    voltage_mode: str = 'all_nodes',
+    include_zeros_in_norm: bool = False,
+    topology_suffix: str = '',
+    slew_mode: str = 'all',
+    sampling_ratio: float = 1.0,
+    max_test_tasks_per_cell: Optional[int] = None,
+    sampling_seed: int = 0,
+):
+    """
+    Build the 2-D V×T train + per-cell test datasets for ASAP7.
+    """
+    num_features = 11
+    num_train_temps = len(TRAIN_TEMPERATURES)
+
+    _print_config_banner(
+        cache_path, cache_type, lib_base_paths, output_dir, prefixes, data_type,
+        voltage_mode, slew_mode, include_zeros_in_norm, topology_suffix,
+        sampling_ratio, max_test_tasks_per_cell, sampling_seed,
+    )
+
+    print(f'\n📦 Loading topology cache...')
+    topology_cache = torch.load(cache_path, weights_only=False)
+    print(f'   ✓ Loaded {len(topology_cache)} cells')
+
+    lib_base_paths_p = [Path(p) for p in lib_base_paths]
+    output_dir_p, mode_suffix = _setup_paths_and_suffix(
+        output_dir, voltage_mode, slew_mode, topology_suffix,
+    )
+
+    train_folders = enumerate_train_folders(lib_base_paths_p, prefixes)
+    test_folders = enumerate_test_folders(lib_base_paths_p, prefixes)
+    print(f'\n🔍 Discovered train folders: {len(train_folders)}')
+    print(f'🔍 Discovered test  folders: {len(test_folders)}')
+    if not train_folders and not skip_train:
+        raise RuntimeError(f'No train folders found under {lib_base_paths} for prefixes {prefixes}')
+
+    rng = random.Random(sampling_seed)
+
+    # ----- Train -----
+    train_path: Optional[Path] = None
+    if not skip_train:
+        print(f'\n{"=" * 80}')
+        print(f'PROCESSING TRAIN DATA (2-D V×T)')
+        print(f'{"=" * 80}')
+
+        all_train_tasks, num_voltages_observed = _collect_all_train_tasks(
+            train_folders, topology_cache, cache_type, data_type,
+            voltage_mode, slew_mode, sampling_ratio, rng,
+        )
+        if not all_train_tasks:
+            print('❌ No valid train tasks!')
+            return
+
+        train_tensors = _allocate_and_fill_train_tensors(
+            all_train_tasks, num_voltages_observed, num_train_temps, num_features,
+        )
+        norm_stats, normalize_indices, normalize_names = _compute_normalization_stats(
+            train_tensors['node_features'], include_zeros_in_norm,
+        )
+        train_path = _save_train_dataset(
+            train_tensors, norm_stats, normalize_indices, normalize_names,
+            output_dir_p, data_type, cache_type, mode_suffix,
+            cache_path, num_voltages_observed, num_train_temps, num_features,
+            voltage_mode, slew_mode, topology_suffix, sampling_ratio, sampling_seed,
+            include_zeros_in_norm,
+        )
+        del train_tensors, all_train_tasks
+        gc.collect()
+    else:
+        print('\nSKIPPING TRAIN (--skip_train)')
+
+    # ----- Test -----
+    print(f'\n{"=" * 80}')
+    print('PROCESSING TEST DATA (2-D V×T)')
+    print(f'{"=" * 80}')
+
+    test_output_dir = output_dir_p / f'test_by_{data_type}_{cache_type}{mode_suffix}_2d'
+    test_output_dir.mkdir(parents=True, exist_ok=True)
+    temp_dir = test_output_dir / '.temp_partials'
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    all_cell_names = _extract_test_partials(
+        test_folders, topology_cache, cache_type, data_type, temp_dir,
+        voltage_mode, slew_mode,
+    )
+    _merge_all_test_partials(
+        all_cell_names, temp_dir, test_output_dir,
+        num_features, voltage_mode, slew_mode, topology_suffix,
+        include_zeros_in_norm, max_test_tasks_per_cell, sampling_seed,
+    )
+
+    # ----- Summary -----
     print(f'\n{"=" * 80}')
     print('SUMMARY')
     print(f'{"=" * 80}')
