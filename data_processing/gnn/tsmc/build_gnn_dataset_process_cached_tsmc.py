@@ -47,6 +47,7 @@ from collections import defaultdict
 import gc
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'utils'))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'precompute'))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '.'))
 
 from precompute_full_graph_topology import apply_topology_to_sample
