@@ -1200,166 +1200,166 @@ def load_stage_aware_topology_cache(cache_path: str):
     return torch.load(cache_path, weights_only=False)
 
 
+def _select_path_cache(cell_cache, cell_name, output_name, delay_type):
+    """Pick pull_up or pull_down topology cache based on delay_type."""
+    if output_name not in cell_cache['output_topologies']:
+        raise ValueError(f"Output {output_name} not found for cell {cell_name}")
+    output_topo = cell_cache['output_topologies'][output_name]
+    return output_topo['pull_up' if 'rise' in delay_type else 'pull_down']
+
+
+def _build_input_to_transistors(transistor_info, cached_external_inputs_set):
+    """Map external input port -> {transistors whose gate is that port}."""
+    mapping = {}
+    for trans_name, trans_info in transistor_info.items():
+        gate = trans_info.get('gate')
+        if gate in cached_external_inputs_set:
+            mapping.setdefault(gate, set()).add(trans_name)
+    return mapping
+
+
+def _node_voltage(node, is_transistor, voltage, voltage_mode):
+    """Resolve per-node voltage according to voltage_mode."""
+    if voltage_mode == 'vdd_only':
+        return voltage if node == 'VDD' else 0.0
+    if voltage_mode == 'vdd_mos':
+        return voltage if (node == 'VDD' or is_transistor) else 0.0
+    return voltage  # 'all_nodes' default
+
+
+def _transistor_slew(node, info, input_slew, slew_mode, related_pin,
+                     input_ports_in_graph, input_connected_transistors,
+                     cached_external_inputs_set, input_to_transistors):
+    """
+    Per-transistor input_slew, depending on whether input ports live in the graph
+    and whether we're in related_pin_only mode.
+    """
+    if input_ports_in_graph:
+        # Slew already lives on input port nodes; transistors get 0.
+        return 0.0
+    if slew_mode == 'related_pin_only' and related_pin:
+        connected_to_related = (
+            info.get('gate') == related_pin
+            or node in input_to_transistors.get(related_pin, set())
+        )
+        return input_slew if connected_to_related else 0.0
+    gate_is_external = (
+        node in input_connected_transistors
+        or info.get('gate') in cached_external_inputs_set
+    )
+    return input_slew if gate_is_external else 0.0
+
+
+def _input_port_slew(node, input_slew, slew_mode, related_pin):
+    """Per-input-port input_slew: all-of vs only-related-pin."""
+    if slew_mode == 'related_pin_only' and related_pin:
+        return input_slew if node == related_pin else 0.0
+    return input_slew
+
+
+def _intermediate_gate_width(node, path_cache, transistor_info):
+    """
+    Width feature for an intermediate gate node:
+    prefer pre-computed `intermediate_gate_widths` (TSMC), else sum
+    widths of transistors whose gate matches this node (ASAP7 fallback).
+    """
+    intermediate_gate_widths = path_cache.get('stage_info', {}).get('intermediate_gate_widths', {})
+    if node in intermediate_gate_widths:
+        return intermediate_gate_widths[node]
+    return sum(
+        info['width']
+        for info in transistor_info.values()
+        if info.get('gate') == node
+    )
+
+
 def apply_stage_aware_topology(topology_cache, cell_name, output_name, delay_type,
                                voltage, input_slew, output_load, external_inputs,
                                voltage_mode='all_nodes', slew_mode='all',
                                related_pin=None):
     """
-    Apply voltage/slew/load to pre-computed stage-aware topology.
-    Works for both ASAP7 (MM*) and TSMC (XM*) transistor naming.
+    Apply voltage/slew/load to a pre-computed stage-aware topology cache and
+    return a node_features tensor + node list. Works for both ASAP7 (MM*) and
+    TSMC (XM*) transistor naming.
 
     Args:
-        topology_cache: Pre-computed topology cache
-        cell_name: Cell name
-        output_name: Output port name (e.g., 'Y', 'Z', 'CON', 'SN')
-        delay_type: 'rise_transition' or 'fall_transition'
-        voltage: Voltage value
-        input_slew: Input slew
-        output_load: Output load
-        external_inputs: List of input port names
-        voltage_mode: 'all_nodes' (default) - voltage applied to all nodes
-                      'vdd_only' - voltage only on VDD node, 0 for others
-        slew_mode: 'all' (default) - input_slew applied to all input ports/connected MOS
-                   'related_pin_only' - input_slew only to related_pin node/connected MOS
-        related_pin: The specific input pin that triggered the timing arc (used when slew_mode='related_pin_only')
+        topology_cache: Pre-computed topology cache.
+        cell_name: Cell name.
+        output_name: Output port name (e.g., 'Y', 'Z', 'CON', 'SN').
+        delay_type: 'rise_transition' or 'fall_transition'.
+        voltage: Voltage value.
+        input_slew: Input slew.
+        output_load: Output load.
+        external_inputs: List of input port names (kept for API compatibility).
+        voltage_mode:
+            - 'all_nodes' (default): voltage applied to all nodes.
+            - 'vdd_only': voltage only on VDD node, 0 for others.
+            - 'vdd_mos': voltage on VDD + transistor nodes only.
+        slew_mode:
+            - 'all' (default): input_slew applied to all input ports / connected MOS.
+            - 'related_pin_only': input_slew only to the related_pin node /
+              connected MOS.
+        related_pin: Input pin that triggered the timing arc (used when
+            slew_mode='related_pin_only').
+
+    Feature format per node: [is_power, is_port, trans_type, width, voltage,
+    input_slew, output_load].
 
     Returns:
-        dict: Node features tensor and all_nodes list
+        {'node_features': [N,7] tensor, 'all_nodes': list}.
     """
-
     if cell_name not in topology_cache:
         raise ValueError(f"Cell {cell_name} not found in topology cache")
-
     cell_cache = topology_cache[cell_name]
-
-    if output_name not in cell_cache['output_topologies']:
-        raise ValueError(f"Output {output_name} not found for cell {cell_name}")
-
-    output_topo = cell_cache['output_topologies'][output_name]
-
-    # Select pull-up or pull-down based on delay_type
-    if 'rise' in delay_type:
-        path_cache = output_topo['pull_up']
-    else:
-        path_cache = output_topo['pull_down']
+    path_cache = _select_path_cache(cell_cache, cell_name, output_name, delay_type)
 
     all_nodes = path_cache['all_nodes']
     transistor_info = cell_cache['transistor_info']
     transistor_nodes = cell_cache.get('transistor_nodes', [])
     cached_external_inputs = cell_cache['external_inputs']
-    cached_external_inputs_set = set(cached_external_inputs)  # For faster lookup
+    cached_external_inputs_set = set(cached_external_inputs)
     power_nodes = cell_cache['power_nodes']
     output_nodes = cell_cache['output_nodes']
-
-    # Get input_connected_transistors (TSMC: pre-computed, ASAP7: fallback to gate check)
     input_connected_transistors = set(cell_cache.get('input_connected_transistors', []))
 
-    # Check if input port nodes are included in all_nodes (input_port mode)
-    # If input ports are in node list, input_slew goes to input port nodes, not to transistors
+    # When input ports are in the node list, input_slew lives on the port nodes;
+    # otherwise it has to live on the gate-driven transistors.
     input_ports_in_graph = any(inp in all_nodes for inp in cached_external_inputs)
+    input_to_transistors = (
+        _build_input_to_transistors(transistor_info, cached_external_inputs_set)
+        if slew_mode == 'related_pin_only' else {}
+    )
 
-    # Build mapping from input port to connected transistors (for related_pin_only mode)
-    # This maps each external input to the set of transistors whose gate is connected to it
-    input_to_transistors = {}
-    if slew_mode == 'related_pin_only':
-        for trans_name, trans_info in transistor_info.items():
-            gate = trans_info.get('gate')
-            if gate in cached_external_inputs_set:
-                if gate not in input_to_transistors:
-                    input_to_transistors[gate] = set()
-                input_to_transistors[gate].add(trans_name)
-
-    # Create node features
-    # Feature format: [is_power, is_port, trans_type, width, voltage, input_slew, output_load]
-    # Note: input_slew assignment depends on slew_mode and whether input ports are in the graph:
-    #   - slew_mode='all' (default):
-    #     - If input_ports_in_graph: input_slew on ALL input port nodes, 0 on transistors
-    #     - Otherwise: input_slew on transistors whose gate is connected to ANY external input
-    #   - slew_mode='related_pin_only':
-    #     - If input_ports_in_graph: input_slew ONLY on related_pin node, 0 on other inputs
-    #     - Otherwise: input_slew ONLY on transistors connected to related_pin
     node_features = []
-
     for node in all_nodes:
-        # Check if this is a transistor node (MM* for ASAP7, XM* for TSMC)
         is_transistor = node in transistor_nodes or node in transistor_info
-
-        # Determine voltage value based on voltage_mode
-        if voltage_mode == 'vdd_only':
-            node_voltage = voltage if node == 'VDD' else 0.0
-        elif voltage_mode == 'vdd_mos':
-            # Apply voltage to VDD and MOS transistor nodes only
-            node_voltage = voltage if (node == 'VDD' or is_transistor) else 0.0
-        else:  # 'all_nodes' (default)
-            node_voltage = voltage
+        node_voltage = _node_voltage(node, is_transistor, voltage, voltage_mode)
 
         if is_transistor:
-            if node in transistor_info:
-                info = transistor_info[node]
-                # input_slew assignment for transistors depends on slew_mode:
-                # - If input_ports_in_graph: always 0 (input_slew is on input port nodes)
-                # - slew_mode='all': input_slew if gate is connected to ANY external input
-                # - slew_mode='related_pin_only': input_slew only if gate is connected to related_pin
-                if input_ports_in_graph:
-                    slew_value = 0.0  # input_slew is on input port nodes, not transistors
-                elif slew_mode == 'related_pin_only' and related_pin:
-                    # Only apply slew to transistors connected to the specific related_pin
-                    connected_to_related = (
-                        info.get('gate') == related_pin or
-                        node in input_to_transistors.get(related_pin, set())
-                    )
-                    slew_value = input_slew if connected_to_related else 0.0
-                else:
-                    # Default: apply slew to all transistors with gate connected to external input
-                    gate_is_external = (node in input_connected_transistors) or (info.get('gate') in cached_external_inputs_set)
-                    slew_value = input_slew if gate_is_external else 0.0
-                # Transistor: [0, 0, trans_type, width, voltage, input_slew, 0]
-                node_features.append([0.0, 0.0, info['type'], info['width'], node_voltage, slew_value, 0.0])
-            else:
-                # Fallback
+            info = transistor_info.get(node)
+            if info is None:
+                # Fallback when transistor list and transistor_info disagree.
                 node_features.append([0.0, 0.0, -1.0, 0.1, node_voltage, 0.0, 0.0])
-
-        else:  # Circuit node
-            if node in power_nodes:
-                # Power rails: [1, 0, 0, 0, voltage, 0, 0]
-                node_features.append([1.0, 0.0, 0.0, 0.0, node_voltage, 0.0, 0.0])
-            elif node in output_nodes:
-                # Output port: [0, 1, 0, 0, voltage, 0, output_load]
-                node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, 0.0, output_load])
-            elif node in cached_external_inputs_set:
-                # Input port node (A, B, C, A1, A2, etc.) - like full_graph
-                # slew_mode='related_pin_only': only related_pin gets input_slew
-                # slew_mode='all': all input ports get input_slew
-                if slew_mode == 'related_pin_only' and related_pin:
-                    port_slew = input_slew if node == related_pin else 0.0
-                else:
-                    port_slew = input_slew
-                # Input port: [0, 1, 0, 0, voltage, input_slew, 0]
-                node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, port_slew, 0.0])
-            else:
-                # Intermediate gate node - sum of all controlled transistor widths
-                gate_width_sum = 0.0
-
-                # Check if pre-computed intermediate_gate_widths exists (TSMC)
-                stage_info = path_cache.get('stage_info', {})
-                intermediate_gate_widths = stage_info.get('intermediate_gate_widths', {})
-
-                if node in intermediate_gate_widths:
-                    # Use pre-computed width (TSMC - accounts for all transistors on same net)
-                    gate_width_sum = intermediate_gate_widths[node]
-                else:
-                    # Fallback: compute from transistor_info (ASAP7 style)
-                    for trans_name, trans_info in transistor_info.items():
-                        if trans_info.get('gate') == node:
-                            gate_width_sum += trans_info['width']
-
-                # Intermediate node: [0, 1, 0, gate_width_sum, voltage, 0, 0]
-                node_features.append([0.0, 1.0, 0.0, gate_width_sum, node_voltage, 0.0, 0.0])
-
-    node_features_tensor = torch.tensor(node_features, dtype=torch.float32)
+                continue
+            slew_value = _transistor_slew(
+                node, info, input_slew, slew_mode, related_pin,
+                input_ports_in_graph, input_connected_transistors,
+                cached_external_inputs_set, input_to_transistors,
+            )
+            node_features.append([0.0, 0.0, info['type'], info['width'], node_voltage, slew_value, 0.0])
+        elif node in power_nodes:
+            node_features.append([1.0, 0.0, 0.0, 0.0, node_voltage, 0.0, 0.0])
+        elif node in output_nodes:
+            node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, 0.0, output_load])
+        elif node in cached_external_inputs_set:
+            port_slew = _input_port_slew(node, input_slew, slew_mode, related_pin)
+            node_features.append([0.0, 1.0, 0.0, 0.0, node_voltage, port_slew, 0.0])
+        else:
+            gate_width_sum = _intermediate_gate_width(node, path_cache, transistor_info)
+            node_features.append([0.0, 1.0, 0.0, gate_width_sum, node_voltage, 0.0, 0.0])
 
     return {
-        'node_features': node_features_tensor,
+        'node_features': torch.tensor(node_features, dtype=torch.float32),
         'all_nodes': all_nodes,
     }
 
