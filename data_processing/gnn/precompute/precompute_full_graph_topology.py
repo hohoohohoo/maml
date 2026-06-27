@@ -27,6 +27,286 @@ sys.path.append('/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn
 from utils.cdl_loader import CDLLoader
 
 
+# ---------------- Shared topology helpers ----------------
+
+def _build_adjacency_matrix(edge_index_tensor, num_nodes):
+    """Binary adjacency matrix from a [2, num_edges] edge_index tensor."""
+    adjacency_matrix = torch.zeros(num_nodes, num_nodes, dtype=torch.float32)
+    if edge_index_tensor.numel() == 0:
+        return adjacency_matrix
+    for i in range(edge_index_tensor.shape[1]):
+        src = edge_index_tensor[0][i]
+        dst = edge_index_tensor[1][i]
+        adjacency_matrix[src][dst] = 1.0
+    return adjacency_matrix
+
+
+def _detect_asap7_cell_nodes(spice_cell, power_nodes):
+    """
+    Detect node lists for an ASAP7 SpiceCell.
+
+    Returns:
+        dict with keys all_nodes, power_nodes, output_nodes, external_inputs,
+        transistor_nodes, intermediate_nets.
+    """
+    transistor_nodes = [trans.name for trans in spice_cell.transistors]
+    all_ports = spice_cell.ports
+
+    # External I/O detection from ports (multi-output cells like Full Adder need this)
+    potential_inputs = []
+    potential_outputs = []
+    for port in all_ports:
+        if port in power_nodes:
+            continue
+        is_used_as_gate = any(t.gate == port for t in spice_cell.transistors)
+        is_used_as_output = any(port in [t.source, t.drain] for t in spice_cell.transistors)
+        if is_used_as_output:
+            potential_outputs.append(port)
+        elif is_used_as_gate:
+            potential_inputs.append(port)
+
+    if potential_outputs:
+        output_nodes = potential_outputs
+    else:
+        output_nodes = [p for p in all_ports if p not in power_nodes and p not in potential_inputs]
+    if not output_nodes:
+        output_nodes = ['Y']
+        print(f"   ⚠️  No outputs detected, using default: {output_nodes}")
+
+    # External inputs and intermediate nets from full transistor net list
+    external_inputs = []
+    intermediate_nets = set()
+    for trans in spice_cell.transistors:
+        for net in [trans.gate, trans.source, trans.drain]:
+            if net in power_nodes or not net:
+                continue
+            is_gate = any(t.gate == net for t in spice_cell.transistors)
+            is_terminal = any(net in [t.source, t.drain] for t in spice_cell.transistors)
+            if is_gate and is_terminal:
+                intermediate_nets.add(net)
+            elif is_gate or (not is_terminal):
+                if net not in external_inputs:
+                    external_inputs.append(net)
+    external_inputs = sorted(external_inputs)
+
+    all_nodes = list(dict.fromkeys(power_nodes + output_nodes + external_inputs + transistor_nodes))
+    return {
+        'all_nodes': all_nodes,
+        'power_nodes': power_nodes,
+        'output_nodes': output_nodes,
+        'external_inputs': external_inputs,
+        'transistor_nodes': transistor_nodes,
+        'intermediate_nets': intermediate_nets,
+    }
+
+
+def _build_asap7_transistor_info(spice_cell):
+    """{trans_name: {type, width, gate, source, drain}}; NMOS=+1.0, PMOS=-1.0; width nm→µm."""
+    transistor_info = {}
+    for trans in spice_cell.transistors:
+        trans_type = 1.0 if 'nmos' in trans.type.lower() else -1.0
+        trans_width = trans.width / 1000.0
+        transistor_info[trans.name] = {
+            'type': trans_type,
+            'width': trans_width,
+            'gate': trans.gate,
+            'source': trans.source,
+            'drain': trans.drain,
+        }
+    return transistor_info
+
+
+def _detect_tsmc_cell_nodes(spi_cell, connectivity, power_nodes, transistor_nodes):
+    """
+    Detect node lists for a TSMC SPI cell using its connectivity map.
+
+    Returns same dict shape as _detect_asap7_cell_nodes.
+    """
+    all_ports = spi_cell.ports
+    potential_inputs = []
+    potential_outputs = []
+
+    for port in all_ports:
+        if port in power_nodes:
+            continue
+        is_used_as_gate = False
+        is_used_as_output = False
+        for _, conn_info in connectivity.items():
+            for node in conn_info['gate']:
+                if port == node or (port in node if ':' not in node else False):
+                    is_used_as_gate = True
+            for node in conn_info['drain'] | conn_info['source']:
+                if port == node or (port in node if ':' not in node else False):
+                    is_used_as_output = True
+        if is_used_as_output and not is_used_as_gate:
+            potential_outputs.append(port)
+        elif is_used_as_gate:
+            potential_inputs.append(port)
+
+    if potential_outputs:
+        output_nodes = potential_outputs
+    else:
+        output_nodes = [p for p in all_ports if p in ['Z', 'ZN', 'Y', 'CO', 'S']]
+        if not output_nodes:
+            output_nodes = (
+                ['Z'] if 'Z' in all_ports
+                else ['ZN'] if 'ZN' in all_ports
+                else ['Y']
+            )
+
+    external_inputs = sorted([p for p in all_ports if p not in power_nodes and p not in output_nodes])
+    intermediate_nets = set()
+    all_nodes = list(dict.fromkeys(power_nodes + output_nodes + external_inputs + transistor_nodes))
+    return {
+        'all_nodes': all_nodes,
+        'power_nodes': power_nodes,
+        'output_nodes': output_nodes,
+        'external_inputs': external_inputs,
+        'transistor_nodes': transistor_nodes,
+        'intermediate_nets': intermediate_nets,
+    }
+
+
+def _build_tsmc_transistor_info(spi_cell, connectivity, transistor_name_map):
+    """{normalized_name: {type, width, gate, source, drain}}; external-node selection."""
+    def find_external_node(node_set, default=''):
+        for n in node_set:
+            if ':' not in n and not n.startswith('N_'):
+                return n
+        return default
+
+    transistor_info = {}
+    for trans in spi_cell.transistors:
+        normalized_name = transistor_name_map[trans.name]
+        trans_type = 1.0 if trans.type == 'nmos' else -1.0
+        trans_width = round(trans.width / 1000.0, 4) if trans.width else 0.1
+        conn = connectivity.get(trans.name, {})
+        transistor_info[normalized_name] = {
+            'type': trans_type,
+            'width': trans_width,
+            'gate': find_external_node(conn.get('gate', set()), ''),
+            'source': find_external_node(conn.get('source', set()), ''),
+            'drain': find_external_node(conn.get('drain', set()), ''),
+        }
+    return transistor_info
+
+
+def _make_topology_cache_entry(nodes_info, edge_index_tensor, edge_attr_tensor,
+                               adjacency_matrix, transistor_info, num_edges):
+    """Build the standard topology cache entry dict (shared ASAP7/TSMC schema)."""
+    return {
+        'all_nodes': nodes_info['all_nodes'],
+        'external_inputs': nodes_info['external_inputs'],
+        'power_nodes': nodes_info['power_nodes'],
+        'output_nodes': nodes_info['output_nodes'],
+        'transistor_nodes': nodes_info['transistor_nodes'],
+        'intermediate_nets': list(nodes_info['intermediate_nets']),
+        'edge_index': edge_index_tensor,
+        'edge_attr': edge_attr_tensor,
+        'adjacency_matrix': adjacency_matrix,
+        'transistor_info': transistor_info,
+        'num_nodes': len(nodes_info['all_nodes']),
+        'num_edges': num_edges,
+    }
+
+
+def _maybe_attach_weighted_fields(cache_entry, weighted_adjacency_matrix, node_capacitance_map):
+    """Attach normalized weighted_adjacency_matrix and node_capacitance if present."""
+    if weighted_adjacency_matrix is not None:
+        normalized_adj = normalize_adjacency_weights_per_cell(weighted_adjacency_matrix)
+        cache_entry['weighted_adjacency_matrix'] = normalized_adj
+        non_zero = normalized_adj[normalized_adj != 0]
+        if len(non_zero) > 0:
+            print(f"   Normalized adj: mean={non_zero.mean():.4f}, std={non_zero.std():.4f}")
+
+    if node_capacitance_map is not None:
+        normalized_cap = normalize_capacitance_per_cell(node_capacitance_map)
+        cache_entry['node_capacitance'] = normalized_cap
+        cap_vals = [v for v in normalized_cap.values() if v != 0]
+        if cap_vals:
+            import numpy as np
+            print(f"   Normalized cap: mean={np.mean(cap_vals):.4f}, std={np.std(cap_vals):.4f}")
+
+
+def _save_topology_cache_and_summary(cell_topology_cache, output_path, with_summary=True):
+    """Save .pth + (optional) per-cell summary print."""
+    print(f"\n💾 Saving topology cache...")
+    print(f"   Total cells cached: {len(cell_topology_cache)}")
+    torch.save(cell_topology_cache, output_path)
+    print(f"   ✓ Saved to: {output_path}")
+
+    if with_summary:
+        print("\n" + "=" * 80)
+        print("SUMMARY")
+        print("=" * 80)
+        for cell_name, cache in cell_topology_cache.items():
+            print(f"  {cell_name:30s}: {cache['num_nodes']:3d} nodes, {cache['num_edges']:4d} edges")
+
+    print("=" * 80)
+    print("✅ Pre-computation complete!")
+    print("=" * 80)
+
+
+def _find_resistance(resistance_map, node1, node2):
+    """Find resistance between two nodes via resistance_map; handle N_x:y variant lookups."""
+    if resistance_map is None:
+        return 1.0
+    if (node1, node2) in resistance_map:
+        return resistance_map[(node1, node2)]
+    for (n1, n2), value in resistance_map.items():
+        for a, b in ((n1, n2), (n2, n1)):
+            if a == node1 and ':' in b:
+                parts = b.split(':')
+                if parts[0] == node2 and parts[1].isdigit():
+                    return value
+            if a == node2 and ':' in b:
+                parts = b.split(':')
+                if parts[0] == node1 and parts[1].isdigit():
+                    return value
+    return 1.0
+
+
+def _get_internal_series_resistance(resistance_map, base_net):
+    """Total series resistance among parasitic RC nodes belonging to base_net."""
+    if resistance_map is None:
+        return 0.0
+    series_nodes = set()
+    for (n1, n2) in resistance_map.keys():
+        for node in (n1, n2):
+            if ':' in node:
+                parts = node.split(':')
+                if parts[0] == base_net and parts[1].isdigit():
+                    series_nodes.add(node)
+    if len(series_nodes) < 2:
+        return 0.0
+    internal_resistance = 0.0
+    series_list = list(series_nodes)
+    for i in range(len(series_list)):
+        for j in range(i + 1, len(series_list)):
+            n1, n2 = series_list[i], series_list[j]
+            if (n1, n2) in resistance_map:
+                internal_resistance += resistance_map[(n1, n2)]
+    return internal_resistance
+
+
+def _dedup_edges(edges, edge_attrs, edge_weights):
+    """Deduplicate edges keeping the first occurrence's attribute/weight."""
+    unique_edges = []
+    unique_attrs = []
+    unique_weights = []
+    seen = set()
+    for edge, attr, weight in zip(edges, edge_attrs, edge_weights):
+        key = (edge[0], edge[1])
+        if key not in seen:
+            seen.add(key)
+            unique_edges.append(edge)
+            unique_attrs.append(attr)
+            unique_weights.append(weight)
+    return unique_edges, unique_attrs, unique_weights
+
+
+# ---------------- ASAP7 edges ----------------
+
 def create_full_graph_edges_asap7(cell, all_nodes):
     """
     ASAP7 CDL cell에 대한 full graph edges 생성
@@ -115,20 +395,21 @@ def create_full_graph_edges_asap7(cell, all_nodes):
 
 def precompute_cell_topology_asap7(cdl_path: str, output_path: str, logic_keywords=None):
     """
-    CDL 파일에서 logic cell들의 topology를 미리 계산하여 저장
+    Pre-compute logic-cell topology cache for ASAP7 (full_graph mode) from a CDL file.
 
     Args:
-        cdl_path: CDL 파일 경로
-        output_path: 출력 캐시 파일 경로 (.pth)
-        logic_keywords: Logic cell을 구분하는 키워드 리스트 (기본값 사용 가능)
-    """
+        cdl_path: CDL file path.
+        output_path: Output cache file (.pth).
+        logic_keywords: Substring matchers identifying logic cells (default list provided).
 
+    Returns:
+        cell_topology_cache: {cell_name: topology dict} (also saved to disk).
+    """
     if logic_keywords is None:
-        # Default logic keywords (build_gnn_dataset_no_split.py와 동일)
         logic_keywords = [
             'AND', 'NAND', 'OR', 'NOR', 'XOR', 'XNOR',
             'INV', 'BUF', 'MUX', 'AO', 'OA', 'AOI', 'OAI',
-            'MAJ', 'FA', 'HA','MAJI' , 'A2O1', 'O2A1'
+            'MAJ', 'FA', 'HA', 'MAJI', 'A2O1', 'O2A1',
         ]
 
     print("=" * 80)
@@ -139,190 +420,66 @@ def precompute_cell_topology_asap7(cdl_path: str, output_path: str, logic_keywor
     print(f"Logic keywords: {logic_keywords}")
     print("=" * 80)
 
-    # Load CDL file
     print("\n📂 Loading CDL file...")
     transformer = CDLLoader(cdl_path)
-
     print(f"   ✓ Loaded {len(transformer.all_logic_cells)} logic cells")
 
-    # Pre-compute topology for each logic cell
+    power_nodes = ['VDD', 'VSS']
     cell_topology_cache = {}
-
     for cell_name, spice_cell in transformer.all_logic_cells.items():
-        # Filter logic cells only
-        is_logic_cell = any(keyword in cell_name for keyword in logic_keywords)
-
-        if not is_logic_cell:
+        if not any(keyword in cell_name for keyword in logic_keywords):
             continue
-
         print(f"\n🔄 Processing: {cell_name}")
 
-        # Node list (full_graph mode: no intermediate nodes)
-        power_nodes = ['VDD', 'VSS']
-        transistor_nodes = [trans.name for trans in spice_cell.transistors]
+        nodes_info = _detect_asap7_cell_nodes(spice_cell, power_nodes)
+        all_nodes = nodes_info['all_nodes']
+        print(
+            f"   Nodes: {len(all_nodes)} (power={len(nodes_info['power_nodes'])}, "
+            f"output={len(nodes_info['output_nodes'])}, "
+            f"inputs={len(nodes_info['external_inputs'])}, "
+            f"transistors={len(nodes_info['transistor_nodes'])})"
+        )
+        print(f"   Intermediate nets (excluded): {sorted(nodes_info['intermediate_nets'])}")
 
-        # Auto-detect output nodes from cell ports (same as transform_sample_MAML_stage_aware.py)
-        # Output nodes = all ports that are not power nodes and not inputs
-        all_ports = spice_cell.ports
-
-        # First pass: collect all nets to identify potential inputs
-        all_nets = set()
-        for trans in spice_cell.transistors:
-            all_nets.add(trans.gate)
-            all_nets.add(trans.source)
-            all_nets.add(trans.drain)
-
-        # Identify external inputs and outputs from ports
-        # More accurate heuristic for multi-output cells (e.g., Full Adder)
-        potential_inputs = []
-        potential_outputs = []
-
-        for port in all_ports:
-            if port not in power_nodes:
-                is_used_as_gate = any(t.gate == port for t in spice_cell.transistors)
-                is_used_as_output = any(port in [t.source, t.drain] for t in spice_cell.transistors)
-
-                # Output characteristic: primarily appears as source/drain (driven by transistors)
-                # Input characteristic: primarily appears as gate only
-                if is_used_as_output:
-                    # This port is driven by transistors → likely output
-                    potential_outputs.append(port)
-                elif is_used_as_gate:
-                    # This port is only used as gate → pure input
-                    potential_inputs.append(port)
-
-        # Final output nodes (prefer potential_outputs, fallback to non-input ports)
-        if potential_outputs:
-            output_nodes = potential_outputs
-        else:
-            # Fallback: ports that are NOT power and NOT inputs
-            output_nodes = [port for port in all_ports
-                           if port not in power_nodes and port not in potential_inputs]
-
-        # If no outputs detected, fallback to 'Y'
-        if not output_nodes:
-            output_nodes = ['Y']
-            print(f"   ⚠️  No outputs detected, using default: {output_nodes}")
-
-        # External inputs (extract from CDL)
-        external_inputs = []
-        intermediate_nets = set()
-
-        for trans in spice_cell.transistors:
-            # Collect all nets
-            for net in [trans.gate, trans.source, trans.drain]:
-                if net not in power_nodes and net:
-                    # Check if it's an external input or intermediate net
-                    # Simple heuristic: if it's a gate of a transistor and appears as source/drain of another, it's intermediate
-                    is_gate = any(t.gate == net for t in spice_cell.transistors)
-                    is_terminal = any(net in [t.source, t.drain] for t in spice_cell.transistors)
-
-                    # Intermediate net: used as both gate and terminal (source/drain)
-                    if is_gate and is_terminal:
-                        intermediate_nets.add(net)
-                    elif is_gate or (not is_terminal):
-                        if net not in external_inputs:
-                            external_inputs.append(net)
-
-        # Sort for consistency
-        external_inputs = sorted(external_inputs)
-
-        # Full graph mode: all nodes except intermediate nets
-        all_nodes = power_nodes + output_nodes + external_inputs + transistor_nodes
-        all_nodes = list(dict.fromkeys(all_nodes))  # Remove duplicates
-
-        print(f"   Nodes: {len(all_nodes)} (power={len(power_nodes)}, output={len(output_nodes)}, "
-              f"inputs={len(external_inputs)}, transistors={len(transistor_nodes)})")
-        print(f"   Intermediate nets (excluded): {sorted(intermediate_nets)}")
-
-        # Create full graph edges
         edges, edge_attrs = create_full_graph_edges_asap7(spice_cell, all_nodes)
-
-        # Convert to tensor format
-        edge_index_tensor = torch.tensor(edges, dtype=torch.int64).T  # Transpose for PyG format [2, num_edges]
+        edge_index_tensor = torch.tensor(edges, dtype=torch.int64).T
         edge_attr_tensor = torch.tensor(edge_attrs, dtype=torch.float32)
+        adjacency_matrix = _build_adjacency_matrix(edge_index_tensor, len(all_nodes))
+        transistor_info = _build_asap7_transistor_info(spice_cell)
 
-        # Pre-compute adjacency matrix from edge_index
-        num_nodes = len(all_nodes)
-        adjacency_matrix = torch.zeros(num_nodes, num_nodes, dtype=torch.float32)
-        for i in range(edge_index_tensor.shape[1]):
-            src = edge_index_tensor[0][i]
-            dst = edge_index_tensor[1][i]
-            adjacency_matrix[src][dst] = 1.0
+        cell_topology_cache[cell_name] = _make_topology_cache_entry(
+            nodes_info, edge_index_tensor, edge_attr_tensor,
+            adjacency_matrix, transistor_info, len(edges)
+        )
+        print(
+            f"   ✓ Cached: {len(all_nodes)} nodes, {len(edges)} edges, "
+            f"adjacency_matrix: {adjacency_matrix.shape}"
+        )
 
-        # Get transistor information for node features (type and width)
-        # IMPORTANT: NMOS = 1.0, PMOS = -1.0 (same as transform_sample_MAML_stage_aware.py)
-        transistor_info = {}
-        for trans in spice_cell.transistors:
-            trans_type = 1.0 if 'nmos' in trans.type.lower() else -1.0
-            trans_width = trans.width / 1000.0  # nm to um
-            transistor_info[trans.name] = {
-                'type': trans_type,
-                'width': trans_width,
-                'gate': trans.gate,
-                'source': trans.source,
-                'drain': trans.drain
-            }
-
-        # Store topology cache
-        cell_topology_cache[cell_name] = {
-            'all_nodes': all_nodes,
-            'external_inputs': external_inputs,
-            'power_nodes': power_nodes,
-            'output_nodes': output_nodes,
-            'transistor_nodes': transistor_nodes,
-            'intermediate_nets': list(intermediate_nets),
-            'edge_index': edge_index_tensor,  # [2, num_edges]
-            'edge_attr': edge_attr_tensor,    # [num_edges, 3]
-            'adjacency_matrix': adjacency_matrix,  # [num_nodes, num_nodes] - PRE-COMPUTED
-            'transistor_info': transistor_info,
-            'num_nodes': len(all_nodes),
-            'num_edges': len(edges)
-        }
-
-        print(f"   ✓ Cached: {len(all_nodes)} nodes, {len(edges)} edges, adjacency_matrix: {adjacency_matrix.shape}")
-
-    # Save cache
-    print(f"\n💾 Saving topology cache...")
-    print(f"   Total cells cached: {len(cell_topology_cache)}")
-
-    torch.save(cell_topology_cache, output_path)
-
-    print(f"   ✓ Saved to: {output_path}")
-
-    # Print summary
-    print("\n" + "=" * 80)
-    print("SUMMARY")
-    print("=" * 80)
-    for cell_name, cache in cell_topology_cache.items():
-        print(f"  {cell_name:30s}: {cache['num_nodes']:3d} nodes, {cache['num_edges']:4d} edges")
-
-    print("=" * 80)
-    print("✅ Pre-computation complete!")
-    print("=" * 80)
-
+    _save_topology_cache_and_summary(cell_topology_cache, output_path, with_summary=True)
     return cell_topology_cache
 
 
 def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keywords=None, weighted=False):
     """
-    TSMC SPI 파일에서 logic cell들의 topology를 미리 계산하여 저장
-    결과 형식은 CDL 버전과 동일
+    Pre-compute logic-cell topology cache for TSMC (full_graph mode) from a SPI file.
 
     Args:
-        spi_path: TSMC SPI 파일 경로
-        output_path: 출력 캐시 파일 경로 (.pth)
-        logic_keywords: Logic cell을 구분하는 키워드 리스트 (기본값 사용 가능)
-        weighted: True면 저항값 기반 weighted adjacency matrix 생성 (TSMC only)
+        spi_path: TSMC SPI file path.
+        output_path: Output cache file (.pth).
+        logic_keywords: Substring matchers identifying logic cells (default list provided).
+        weighted: When True, also build a resistance-weighted adjacency matrix.
+
+    Returns:
+        cell_topology_cache: {cell_name: topology dict} (also saved to disk).
     """
     from utils.spi_loader import SPILoader
 
     if logic_keywords is None:
-        # TSMC cell naming conventions
         logic_keywords = [
             'AN', 'ND', 'OR', 'NR', 'XOR', 'XNOR',
             'INV', 'BUF', 'MUX', 'AO', 'OA', 'AOI', 'OAI',
-            'MAJ', 'FA', 'HA', 'DEL', 'CKND', 'CKAN', 'CKNR' , 'DFCNQD' , 'SDFSNQD'
+            'MAJ', 'FA', 'HA', 'DEL', 'CKND', 'CKAN', 'CKNR', 'DFCNQD', 'SDFSNQD',
         ]
 
     print("=" * 80)
@@ -334,90 +491,34 @@ def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keyword
     print(f"Weighted adjacency: {weighted}")
     print("=" * 80)
 
-    # Load SPI file
     print("\n📂 Loading TSMC SPI file...")
     loader = SPILoader(spi_path, verbose=False)
-
     print(f"   ✓ Loaded {len(loader.all_logic_cells)} logic cells")
 
-    # Pre-compute topology for each logic cell
+    power_nodes = ['VDD', 'VSS']
     cell_topology_cache = {}
-
     for cell_name, spi_cell in loader.all_logic_cells.items():
-        # Filter logic cells only
-        is_logic_cell = any(keyword in cell_name.upper() for keyword in logic_keywords)
-
-        if not is_logic_cell:
+        if not any(keyword in cell_name.upper() for keyword in logic_keywords):
             continue
-
         print(f"\n🔄 Processing: {cell_name}")
 
-        # Get transistor connectivity (resolves resistance-based connections)
+        # Use original transistor names (XM1, XM2, …); identity name map.
         connectivity = loader.get_transistor_connectivity(cell_name)
-
-        # Node list (full_graph mode)
-        power_nodes = ['VDD', 'VSS']
-
-        # Transistor nodes: use original names (XM1, XM2, etc.)
-        # No need to normalize - apply_topology_to_sample uses transistor_nodes list directly
         transistor_nodes = [trans.name for trans in spi_cell.transistors]
-        transistor_name_map = {name: name for name in transistor_nodes}  # Identity mapping
+        transistor_name_map = {name: name for name in transistor_nodes}
 
-        # Get ports (filter out power)
-        all_ports = spi_cell.ports
+        nodes_info = _detect_tsmc_cell_nodes(spi_cell, connectivity, power_nodes, transistor_nodes)
+        all_nodes = nodes_info['all_nodes']
+        print(
+            f"   Nodes: {len(all_nodes)} (power={len(nodes_info['power_nodes'])}, "
+            f"output={len(nodes_info['output_nodes'])}, "
+            f"inputs={len(nodes_info['external_inputs'])}, "
+            f"transistors={len(transistor_nodes)})"
+        )
+        print(f"   Output nodes: {nodes_info['output_nodes']}")
+        print(f"   Input nodes: {nodes_info['external_inputs']}")
 
-        # Identify external inputs and outputs from connectivity
-        potential_inputs = []
-        potential_outputs = []
-
-        for port in all_ports:
-            if port in power_nodes:
-                continue
-
-            # Check if port is used as gate (input) or source/drain (output)
-            is_used_as_gate = False
-            is_used_as_output = False
-
-            for trans_name, conn_info in connectivity.items():
-                # Check gate connections
-                for node in conn_info['gate']:
-                    if port == node or (port in node if ':' not in node else False):
-                        is_used_as_gate = True
-                # Check drain/source connections
-                for node in conn_info['drain'] | conn_info['source']:
-                    if port == node or (port in node if ':' not in node else False):
-                        is_used_as_output = True
-
-            if is_used_as_output and not is_used_as_gate:
-                potential_outputs.append(port)
-            elif is_used_as_gate:
-                potential_inputs.append(port)
-
-        # Final output nodes
-        if potential_outputs:
-            output_nodes = potential_outputs
-        else:
-            # TSMC often uses 'Z' or 'ZN' for output
-            output_nodes = [p for p in all_ports if p in ['Z', 'ZN', 'Y', 'CO', 'S']]
-            if not output_nodes:
-                output_nodes = ['Z'] if 'Z' in all_ports else ['ZN'] if 'ZN' in all_ports else ['Y']
-
-        # External inputs
-        external_inputs = sorted([p for p in all_ports if p not in power_nodes and p not in output_nodes])
-
-        # Intermediate nets (internal nodes not in ports)
-        intermediate_nets = set()
-
-        # Full graph mode: all nodes
-        all_nodes = power_nodes + output_nodes + external_inputs + transistor_nodes
-        all_nodes = list(dict.fromkeys(all_nodes))  # Remove duplicates
-
-        print(f"   Nodes: {len(all_nodes)} (power={len(power_nodes)}, output={len(output_nodes)}, "
-              f"inputs={len(external_inputs)}, transistors={len(transistor_nodes)})")
-        print(f"   Output nodes: {output_nodes}")
-        print(f"   Input nodes: {external_inputs}")
-
-        # Build resistance and capacitance maps if weighted mode
+        # Optional resistance / parasitic-capacitance maps for weighted mode.
         resistance_map = None
         node_capacitance_map = None
         if weighted:
@@ -426,124 +527,50 @@ def precompute_cell_topology_tsmc(spi_path: str, output_path: str, logic_keyword
             print(f"   Built resistance map: {len(resistance_map) // 2} unique connections")
             print(f"   Built capacitance map: {len(node_capacitance_map)} nodes")
 
-        # Create edges from TSMC SPI connectivity
+        # Build edges (binary or weighted) via the shared TSMC edge builder.
         if weighted:
             edges, edge_attrs, edge_weights = create_full_graph_edges_tsmc(
                 spi_cell, connectivity, all_nodes, transistor_name_map,
-                weighted=True, resistance_map=resistance_map
+                weighted=True, resistance_map=resistance_map,
             )
         else:
             edges, edge_attrs = create_full_graph_edges_tsmc(
-                spi_cell, connectivity, all_nodes, transistor_name_map
+                spi_cell, connectivity, all_nodes, transistor_name_map,
             )
             edge_weights = None
 
-        # Convert to tensor format
-        edge_index_tensor = torch.tensor(edges, dtype=torch.int64).T if edges else torch.zeros(2, 0, dtype=torch.int64)
-        edge_attr_tensor = torch.tensor(edge_attrs, dtype=torch.float32) if edge_attrs else torch.zeros(0, 3, dtype=torch.float32)
+        edge_index_tensor = (
+            torch.tensor(edges, dtype=torch.int64).T if edges
+            else torch.zeros(2, 0, dtype=torch.int64)
+        )
+        edge_attr_tensor = (
+            torch.tensor(edge_attrs, dtype=torch.float32) if edge_attrs
+            else torch.zeros(0, 3, dtype=torch.float32)
+        )
+        adjacency_matrix = _build_adjacency_matrix(edge_index_tensor, len(all_nodes))
 
-        # Pre-compute adjacency matrix (always binary: 0 or 1)
-        num_nodes = len(all_nodes)
-        adjacency_matrix = torch.zeros(num_nodes, num_nodes, dtype=torch.float32)
-
-        if edges:
-            for i in range(edge_index_tensor.shape[1]):
-                src = edge_index_tensor[0][i]
-                dst = edge_index_tensor[1][i]
-                adjacency_matrix[src][dst] = 1.0
-
+        weighted_adjacency_matrix = None
         if weighted and edges and edge_weights:
-            # Weighted adjacency matrix using resistance values (separate from binary)
-            weighted_adjacency_matrix = torch.zeros(num_nodes, num_nodes, dtype=torch.float32)
-            for i, (edge, weight) in enumerate(zip(edges, edge_weights)):
-                src, dst = edge
+            weighted_adjacency_matrix = torch.zeros(len(all_nodes), len(all_nodes), dtype=torch.float32)
+            for (src, dst), weight in zip(edges, edge_weights):
                 weighted_adjacency_matrix[src][dst] = weight
-
             non_zero_r = [w for w in edge_weights if w > 0]
-            print(f"   Raw resistance range: min={min(non_zero_r):.4f}, max={max(non_zero_r):.4f}")
-        else:
-            weighted_adjacency_matrix = None
+            if non_zero_r:
+                print(f"   Raw resistance range: min={min(non_zero_r):.4f}, max={max(non_zero_r):.4f}")
 
-        # Get transistor information (normalized names)
-        # IMPORTANT: NMOS = 1.0, PMOS = -1.0 (same as CDL version)
-        transistor_info = {}
-        for i, trans in enumerate(spi_cell.transistors):
-            normalized_name = transistor_name_map[trans.name]
-            trans_type = 1.0 if trans.type == 'nmos' else -1.0
-            trans_width = round(trans.width / 1000.0, 4) if trans.width else 0.1  # nm to um
+        transistor_info = _build_tsmc_transistor_info(spi_cell, connectivity, transistor_name_map)
 
-            # Get actual connected nodes from connectivity
-            conn = connectivity.get(trans.name, {})
-
-            # Find the actual gate/source/drain nodes (filter out internal M:XXX nodes)
-            def find_external_node(node_set, default=''):
-                for n in node_set:
-                    if ':' not in n and not n.startswith('N_'):
-                        return n
-                return default
-
-            gate_node = find_external_node(conn.get('gate', set()), '')
-            source_node = find_external_node(conn.get('source', set()), '')
-            drain_node = find_external_node(conn.get('drain', set()), '')
-
-            transistor_info[normalized_name] = {
-                'type': trans_type,
-                'width': trans_width,
-                'gate': gate_node,
-                'source': source_node,
-                'drain': drain_node
-            }
-
-        # Store topology cache
-        cache_entry = {
-            'all_nodes': all_nodes,
-            'external_inputs': external_inputs,
-            'power_nodes': power_nodes,
-            'output_nodes': output_nodes,
-            'transistor_nodes': transistor_nodes,
-            'intermediate_nets': list(intermediate_nets),
-            'edge_index': edge_index_tensor,
-            'edge_attr': edge_attr_tensor,
-            'adjacency_matrix': adjacency_matrix,
-            'transistor_info': transistor_info,
-            'num_nodes': len(all_nodes),
-            'num_edges': len(edges)
-        }
-
-        # Add weighted adjacency matrix and node capacitance if available
-        # Apply per-cell normalization
-        if weighted_adjacency_matrix is not None:
-            normalized_adj = normalize_adjacency_weights_per_cell(weighted_adjacency_matrix)
-            cache_entry['weighted_adjacency_matrix'] = normalized_adj
-            non_zero = normalized_adj[normalized_adj != 0]
-            if len(non_zero) > 0:
-                print(f"   Normalized adj: mean={non_zero.mean():.4f}, std={non_zero.std():.4f}")
-
-        if node_capacitance_map is not None:
-            normalized_cap = normalize_capacitance_per_cell(node_capacitance_map)
-            cache_entry['node_capacitance'] = normalized_cap
-            cap_vals = [v for v in normalized_cap.values() if v != 0]
-            if cap_vals:
-                import numpy as np
-                print(f"   Normalized cap: mean={np.mean(cap_vals):.4f}, std={np.std(cap_vals):.4f}")
-
+        cache_entry = _make_topology_cache_entry(
+            nodes_info, edge_index_tensor, edge_attr_tensor,
+            adjacency_matrix, transistor_info, len(edges),
+        )
+        _maybe_attach_weighted_fields(cache_entry, weighted_adjacency_matrix, node_capacitance_map)
         cell_topology_cache[cell_name] = cache_entry
 
         weighted_str = ", weighted_adj=✓" if weighted_adjacency_matrix is not None else ""
         print(f"   ✓ Cached: {len(all_nodes)} nodes, {len(edges)} edges{weighted_str}")
 
-    # Save cache
-    print(f"\n💾 Saving topology cache...")
-    print(f"   Total cells cached: {len(cell_topology_cache)}")
-
-    torch.save(cell_topology_cache, output_path)
-
-    print(f"   ✓ Saved to: {output_path}")
-
-    print("=" * 80)
-    print("✅ Pre-computation complete!")
-    print("=" * 80)
-
+    _save_topology_cache_and_summary(cell_topology_cache, output_path, with_summary=False)
     return cell_topology_cache
 
 
@@ -705,205 +732,72 @@ def normalize_capacitance_per_cell(node_capacitance_map):
 def create_full_graph_edges_tsmc(spi_cell, connectivity, all_nodes, transistor_name_map,
                                   weighted=False, resistance_map=None):
     """
-    TSMC SPI cell에 대한 full graph edges 생성
+    Build full-graph edges for a TSMC SPI cell.
 
-    TSMC SPI는 저항 기반 연결 정보를 사용하므로,
-    connectivity 정보를 활용하여 실제 연결을 추출
-
-    Args:
-        spi_cell: SPIParser의 LogicCell
-        connectivity: get_transistor_connectivity() 결과
-        all_nodes: 모든 노드 리스트
-        transistor_name_map: XMx -> MMy 매핑
-        weighted: True면 저항값을 weight로 사용
-        resistance_map: 저항값 맵 (weighted=True일 때 필요)
+    External terminals (non-N_, non-:) get direct bidirectional edges to the transistor
+    node; transistors that meet at an intermediate N_* net get connected via that net.
+    With weighted=True, edge weights are resistance values (using resistance_map).
 
     Returns:
-        edges: [[src, dst], ...]
-        edge_attrs: [[1,0,0], ...]
-        edge_weights: [weight, ...] (weighted=True일 때만)
+        (edges, edge_attrs) when weighted=False,
+        (edges, edge_attrs, edge_weights) when weighted=True.
     """
-    edges = []
-    edge_attrs = []
-    edge_weights = []  # 저항값 기반 weights
-
-    # Node index mapping
+    edges, edge_attrs, edge_weights = [], [], []
     node_to_idx = {node: idx for idx, node in enumerate(all_nodes)}
+    net_connections = {}  # intermediate net -> [(transistor_name, mos_terminal, _)]
 
     print(f"   🔗 Creating full graph edges (TSMC SPI, weighted={weighted}):")
 
-    # Track connections via intermediate nodes
-    net_connections = {}  # net -> [(transistor_name, terminal_node)]
-
-    # Helper function to find resistance between nodes
-    def find_resistance(node1, node2):
-        """
-        Find resistance value between two nodes via resistance_map.
-        Also handles N_x:y variant lookups when base net is provided.
-        """
-        if resistance_map is None:
-            return 1.0
-        # Direct lookup
-        if (node1, node2) in resistance_map:
-            return resistance_map[(node1, node2)]
-
-        # Try N_x:y variant lookups if one node is a base net (e.g., N_7)
-        # Look for connections like (M1:DRN, N_7:1) when searching for (M1:DRN, N_7)
-        for (n1, n2), value in resistance_map.items():
-            # Check if n1 matches node1 and n2 is a variant of node2
-            if n1 == node1 and ':' in n2:
-                parts = n2.split(':')
-                if parts[0] == node2 and parts[1].isdigit():
-                    return value
-            # Check if n2 matches node1 and n1 is a variant of node2
-            if n2 == node1 and ':' in n1:
-                parts = n1.split(':')
-                if parts[0] == node2 and parts[1].isdigit():
-                    return value
-            # Reverse: n1 matches node2, n2 is a variant of node1
-            if n1 == node2 and ':' in n2:
-                parts = n2.split(':')
-                if parts[0] == node1 and parts[1].isdigit():
-                    return value
-            if n2 == node2 and ':' in n1:
-                parts = n1.split(':')
-                if parts[0] == node1 and parts[1].isdigit():
-                    return value
-
-        return 1.0  # Default if not found
-
-    def get_internal_series_resistance(base_net):
-        """
-        Calculate total internal series resistance for parasitic RC nodes.
-
-        For nodes like N_7:1 -> N_7:2 -> N_7:3, sum up the resistances
-        between consecutive nodes in the same series.
-
-        Args:
-            base_net: Base net name (e.g., "N_7")
-
-        Returns:
-            Total internal series resistance (0.0 if no internal resistors found)
-        """
-        if resistance_map is None:
-            return 0.0
-
-        # Find all N_x:y nodes belonging to this base net
-        series_nodes = set()
-        for (n1, n2) in resistance_map.keys():
-            # Check if node belongs to this base net series
-            for node in [n1, n2]:
-                if ':' in node:
-                    parts = node.split(':')
-                    if parts[0] == base_net and parts[1].isdigit():
-                        series_nodes.add(node)
-
-        if len(series_nodes) < 2:
-            return 0.0
-
-        # Sum up resistances between nodes in the same series
-        internal_resistance = 0.0
-        series_list = list(series_nodes)
-
-        for i in range(len(series_list)):
-            for j in range(i + 1, len(series_list)):
-                n1, n2 = series_list[i], series_list[j]
-                if (n1, n2) in resistance_map:
-                    internal_resistance += resistance_map[(n1, n2)]
-
-        return internal_resistance
-
+    # Pass 1: direct transistor↔external-terminal edges, and collect N_* intermediates.
     for trans in spi_cell.transistors:
         trans_name = trans.name
         normalized_name = transistor_name_map.get(trans_name)
-        mos_name = trans_name.replace('X', '')  # XM1 -> M1
-
         if normalized_name not in node_to_idx:
             continue
-
+        mos_name = trans_name.replace('X', '')  # XM1 -> M1
         trans_idx = node_to_idx[normalized_name]
-
-        # Get connectivity info
         conn = connectivity.get(trans_name, {})
 
-        # Process each terminal type
-        for terminal_type in ['gate', 'source', 'drain']:
-            connected_nodes = conn.get(terminal_type, set())
+        for terminal_type in ('gate', 'source', 'drain'):
             terminal_suffix = {'gate': 'GATE', 'source': 'SRC', 'drain': 'DRN'}[terminal_type]
             mos_terminal = f"{mos_name}:{terminal_suffix}"
 
-            for node in connected_nodes:
-                # Skip internal M:XXX nodes
+            for node in conn.get(terminal_type, set()):
                 if ':' in node:
-                    continue
-
-                # Skip intermediate nodes (N_xx)
+                    continue  # skip internal M:XXX nodes
                 if node.startswith('N_'):
-                    # Track for transistor-transistor connections with terminal info
-                    if node not in net_connections:
-                        net_connections[node] = []
-                    net_connections[node].append((normalized_name, mos_terminal, node))
+                    net_connections.setdefault(node, []).append((normalized_name, mos_terminal, node))
                     continue
+                if node not in node_to_idx:
+                    continue
+                terminal_idx = node_to_idx[node]
+                weight = _find_resistance(resistance_map, mos_terminal, node) if weighted else 1.0
+                edges.append([trans_idx, terminal_idx]);  edge_attrs.append([1.0, 0.0, 0.0]);  edge_weights.append(weight)
+                edges.append([terminal_idx, trans_idx]);  edge_attrs.append([1.0, 0.0, 0.0]);  edge_weights.append(weight)
 
-                # Direct connection to external node
-                if node in node_to_idx:
-                    terminal_idx = node_to_idx[node]
-
-                    # Find resistance weight
-                    weight = find_resistance(mos_terminal, node) if weighted else 1.0
-
-                    # Bidirectional edge
-                    edges.append([trans_idx, terminal_idx])
-                    edge_attrs.append([1.0, 0.0, 0.0])
-                    edge_weights.append(weight)
-                    edges.append([terminal_idx, trans_idx])
-                    edge_attrs.append([1.0, 0.0, 0.0])
-                    edge_weights.append(weight)
-
-    # Connect transistors via intermediate nets (N_xx nodes)
+    # Pass 2: transistor↔transistor via intermediate (N_*) nets.
     for net, connected_trans_list in net_connections.items():
-        if len(connected_trans_list) >= 2:
-            print(f"      Via {net}: connecting {[t[0] for t in connected_trans_list]}")
-            for i in range(len(connected_trans_list)):
-                for j in range(i + 1, len(connected_trans_list)):
-                    trans1, term1, _ = connected_trans_list[i]
-                    trans2, term2, _ = connected_trans_list[j]
+        if len(connected_trans_list) < 2:
+            continue
+        print(f"      Via {net}: connecting {[t[0] for t in connected_trans_list]}")
+        for i in range(len(connected_trans_list)):
+            for j in range(i + 1, len(connected_trans_list)):
+                trans1, term1, _ = connected_trans_list[i]
+                trans2, term2, _ = connected_trans_list[j]
+                if trans1 not in node_to_idx or trans2 not in node_to_idx:
+                    continue
+                idx1, idx2 = node_to_idx[trans1], node_to_idx[trans2]
+                if weighted:
+                    r1 = _find_resistance(resistance_map, term1, net)
+                    r2 = _find_resistance(resistance_map, net, term2)
+                    r_internal = _get_internal_series_resistance(resistance_map, net)
+                    weight = r1 + r_internal + r2  # total series resistance
+                else:
+                    weight = 1.0
+                edges.append([idx1, idx2]);  edge_attrs.append([1.0, 0.0, 0.0]);  edge_weights.append(weight)
+                edges.append([idx2, idx1]);  edge_attrs.append([1.0, 0.0, 0.0]);  edge_weights.append(weight)
 
-                    if trans1 in node_to_idx and trans2 in node_to_idx:
-                        idx1 = node_to_idx[trans1]
-                        idx2 = node_to_idx[trans2]
-
-                        # Calculate weight as sum of resistances via intermediate net
-                        if weighted:
-                            r1 = find_resistance(term1, net)
-                            r2 = find_resistance(net, term2)
-                            # Add internal series resistance (N_7:1 -> N_7:2 -> N_7:3)
-                            r_internal = get_internal_series_resistance(net)
-                            weight = r1 + r_internal + r2  # Total series resistance
-                        else:
-                            weight = 1.0
-
-                        # Bidirectional edge
-                        edges.append([idx1, idx2])
-                        edge_attrs.append([1.0, 0.0, 0.0])
-                        edge_weights.append(weight)
-                        edges.append([idx2, idx1])
-                        edge_attrs.append([1.0, 0.0, 0.0])
-                        edge_weights.append(weight)
-
-    # Remove duplicate edges (keep first occurrence's weight)
-    unique_edges = []
-    unique_attrs = []
-    unique_weights = []
-    seen = set()
-    for edge, attr, weight in zip(edges, edge_attrs, edge_weights):
-        key = (edge[0], edge[1])
-        if key not in seen:
-            seen.add(key)
-            unique_edges.append(edge)
-            unique_attrs.append(attr)
-            unique_weights.append(weight)
-
+    unique_edges, unique_attrs, unique_weights = _dedup_edges(edges, edge_attrs, edge_weights)
     print(f"      📊 Total edges: {len(unique_edges)} (deduplicated from {len(edges)})")
 
     if weighted:

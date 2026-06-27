@@ -542,6 +542,331 @@ def _multi_stage_to_dict(multi_stage_info, external_inputs=None):
 
 
 # ============================================================================
+# Shared multi-stage topology helpers
+# ============================================================================
+
+def _collect_path_nodes(multi_stage, power_nodes, output_node, external_inputs, include_input_ports):
+    """Collect deduplicated node list for one path direction."""
+    nodes = power_nodes + [output_node]
+    nodes += multi_stage.all_intermediate_nodes
+    for stage in multi_stage.stages:
+        nodes += stage.transistors
+    if include_input_ports:
+        nodes += external_inputs
+    return list(dict.fromkeys(nodes))
+
+
+def _edges_to_index_attr(edges, edge_attrs):
+    """Convert raw edge lists to PyG edge_index [2,E] / edge_attr [E,5] tensors."""
+    if edges:
+        edge_index = torch.tensor(edges, dtype=torch.int64).T
+        edge_attr = torch.tensor(edge_attrs, dtype=torch.float32)
+    else:
+        edge_index = torch.empty((2, 0), dtype=torch.int64)
+        edge_attr = torch.empty((0, 5), dtype=torch.float32)
+    return edge_index, edge_attr
+
+
+def _build_binary_adjacency(edge_index, num_nodes, bidirection):
+    """Binary adjacency from edge_index, optionally bidirectional."""
+    adjacency = torch.zeros(num_nodes, num_nodes, dtype=torch.float32)
+    if edge_index.numel() == 0:
+        return adjacency
+    for i in range(edge_index.shape[1]):
+        src = edge_index[0][i]
+        dst = edge_index[1][i]
+        adjacency[src][dst] = 1.0
+        if bidirection:
+            adjacency[dst][src] = 1.0
+    return adjacency
+
+
+def _build_weighted_adjacency_normalized(edge_index, nodes, resistance_map, cell, bidirection):
+    """Resistance-weighted adjacency (TSMC only), normalized per cell."""
+    num_nodes = len(nodes)
+    edge_weights = get_edge_resistance(edge_index, nodes, resistance_map, cell)
+    weighted_raw = torch.zeros(num_nodes, num_nodes, dtype=torch.float32)
+    for i in range(edge_index.shape[1]):
+        src = edge_index[0][i]
+        dst = edge_index[1][i]
+        weighted_raw[src][dst] = edge_weights[i]
+        if bidirection:
+            weighted_raw[dst][src] = edge_weights[i]
+    return normalize_adjacency_weights_per_cell(weighted_raw)
+
+
+def _apply_extra_edges(adjacency, nodes, multi_stage, transistor_info, external_inputs,
+                       gate_control_weight, input_port_weight):
+    """In-place: optionally add gate-control + input-port edges; print counts."""
+    if gate_control_weight > 0:
+        stage_info_temp = _multi_stage_to_dict(multi_stage, external_inputs)
+        gate_ctrl_count = add_gate_control_edges(
+            adjacency, nodes, stage_info_temp,
+            transistor_info, external_inputs, gate_control_weight,
+        )
+        if gate_ctrl_count > 0:
+            print(f"      Added {gate_ctrl_count} gate control edges (weight={gate_control_weight})")
+    if input_port_weight > 0:
+        input_port_count = add_input_port_edges(
+            adjacency, nodes, transistor_info,
+            external_inputs, input_port_weight,
+        )
+        if input_port_count > 0:
+            print(f"      Added {input_port_count} input port edges (weight={input_port_weight})")
+
+
+def _build_directional_path(extractor, multi_stage, power_nodes, output_node, external_inputs,
+                            transistor_info, gate_control_weight, input_port_weight, bidirection,
+                            weighted=False, resistance_map=None, cell=None):
+    """
+    Build full path data for one direction (rise OR fall).
+
+    Returns dict with keys: nodes, edges, edge_index, edge_attr, adjacency,
+    weighted_adjacency (or None).
+    """
+    nodes = _collect_path_nodes(
+        multi_stage, power_nodes, output_node, external_inputs,
+        include_input_ports=input_port_weight > 0,
+    )
+    edges, edge_attrs = extractor.create_multi_stage_edges(multi_stage, nodes)
+    edge_index, edge_attr = _edges_to_index_attr(edges, edge_attrs)
+
+    adjacency = _build_binary_adjacency(edge_index, len(nodes), bidirection)
+    weighted_adjacency = None
+    if edges and weighted and resistance_map and cell is not None:
+        weighted_adjacency = _build_weighted_adjacency_normalized(
+            edge_index, nodes, resistance_map, cell, bidirection,
+        )
+
+    _apply_extra_edges(
+        adjacency, nodes, multi_stage, transistor_info, external_inputs,
+        gate_control_weight, input_port_weight,
+    )
+
+    return {
+        'nodes': nodes,
+        'edges': edges,
+        'edge_index': edge_index,
+        'edge_attr': edge_attr,
+        'adjacency': adjacency,
+        'weighted_adjacency': weighted_adjacency,
+    }
+
+
+def _empty_path_fallback(power_nodes, output_node, external_inputs):
+    """Fallback path data used by TSMC except blocks (empty edges/adjacency)."""
+    nodes = power_nodes + [output_node] + external_inputs
+    return {
+        'nodes': nodes,
+        'edges': [],
+        'edge_index': torch.empty((2, 0), dtype=torch.int64),
+        'edge_attr': torch.empty((0, 5), dtype=torch.float32),
+        'adjacency': torch.zeros(len(nodes), len(nodes), dtype=torch.float32),
+        'weighted_adjacency': None,
+    }
+
+
+def _make_path_cache_entry(path, stage_info):
+    """Cache dict entry for one direction (pull_up or pull_down)."""
+    entry = {
+        'all_nodes': path['nodes'],
+        'edge_index': path['edge_index'],
+        'edge_attr': path['edge_attr'],
+        'adjacency_matrix': path['adjacency'],
+        'stage_info': stage_info,
+        'num_nodes': len(path['nodes']),
+        'num_edges': len(path['edges']) if path['edges'] else 0,
+    }
+    if path['weighted_adjacency'] is not None:
+        entry['weighted_adjacency_matrix'] = path['weighted_adjacency']
+    return entry
+
+
+def _save_stage_aware_cache(stage_aware_cache, output_path):
+    """mkdir parent + torch.save + summary print."""
+    print(f"\n Saving stage-aware topology cache...")
+    print(f"   Total cells cached: {len(stage_aware_cache)}")
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    torch.save(stage_aware_cache, output_path)
+    print(f"   Saved to: {output_path}")
+    _print_cache_summary(stage_aware_cache)
+
+
+# ----- ASAP7-specific helpers -----
+
+def _detect_ports_stage_aware_asap7(spice_cell, power_nodes):
+    """ASAP7: (output_nodes, external_inputs) from cell ports."""
+    potential_inputs = []
+    potential_outputs = []
+    for port in spice_cell.ports:
+        if port in power_nodes:
+            continue
+        is_used_as_gate = any(t.gate == port for t in spice_cell.transistors)
+        is_used_as_output = any(port in [t.source, t.drain] for t in spice_cell.transistors)
+        if is_used_as_output:
+            potential_outputs.append(port)
+        elif is_used_as_gate:
+            potential_inputs.append(port)
+
+    if potential_outputs:
+        output_nodes = potential_outputs
+    else:
+        output_nodes = [
+            p for p in spice_cell.ports
+            if p not in power_nodes and p not in potential_inputs
+        ]
+    if not output_nodes:
+        output_nodes = ['Y']
+        print(f"   No outputs detected, using default: {output_nodes}")
+    return output_nodes, sorted(potential_inputs)
+
+
+def _build_transistor_info_stage_aware_asap7(spice_cell):
+    """ASAP7: ({trans_name: {type, width, gate, source, drain}}, transistor_nodes)."""
+    transistor_info = {}
+    transistor_nodes = []
+    for trans in spice_cell.transistors:
+        trans_type = 1.0 if 'nmos' in trans.type.lower() else -1.0
+        trans_width = trans.width / 1000.0
+        transistor_info[trans.name] = {
+            'type': trans_type,
+            'width': trans_width,
+            'gate': trans.gate,
+            'source': trans.source,
+            'drain': trans.drain,
+        }
+        transistor_nodes.append(trans.name)
+    return transistor_info, transistor_nodes
+
+
+def _compute_intermediate_gate_widths_asap7(spice_cell, gate_set):
+    """ASAP7: per-gate sum of widths of transistors whose gate equals each gate."""
+    if not gate_set:
+        return {}
+    widths = {}
+    for gate_node in gate_set:
+        width_sum = 0.0
+        controlled_count = 0
+        for trans in spice_cell.transistors:
+            if trans.gate == gate_node:
+                trans_width = round(trans.width / 1000.0, 4) if trans.width else 0.054
+                width_sum += trans_width
+                controlled_count += 1
+        widths[gate_node] = round(width_sum, 4)
+        if controlled_count > 0:
+            print(f"         {gate_node}: width={width_sum:.4f} ({controlled_count} transistors)")
+    return widths
+
+
+def _compute_input_connected_transistors_asap7(spice_cell, external_inputs):
+    """ASAP7: transistor names whose gate is an external input."""
+    external_inputs_set = set(external_inputs)
+    return [t.name for t in spice_cell.transistors if t.gate in external_inputs_set]
+
+
+# ----- TSMC-specific helpers -----
+
+def _detect_ports_stage_aware_tsmc(cell, extractor, power_nodes):
+    """TSMC: (output_nodes, external_inputs) using the extractor's resolver."""
+    potential_inputs = []
+    potential_outputs = []
+    for port in cell.ports:
+        if port in power_nodes:
+            continue
+        is_used_as_gate = False
+        is_used_as_output = False
+        for trans in cell.transistors:
+            mos_name = trans.name.replace('X', '')
+            for term, role in (
+                (f"{mos_name}:GATE", 'gate'),
+                (f"{mos_name}:DRN", 'output'),
+                (f"{mos_name}:SRC", 'output'),
+            ):
+                if term not in cell.connections:
+                    continue
+                connected = extractor._resolve_node_connection(cell, term)
+                if connected != port:
+                    continue
+                if role == 'gate':
+                    is_used_as_gate = True
+                else:
+                    is_used_as_output = True
+
+        if is_used_as_output and not is_used_as_gate:
+            potential_outputs.append(port)
+        elif is_used_as_gate:
+            potential_inputs.append(port)
+
+    if potential_outputs:
+        output_nodes = potential_outputs
+    else:
+        output_nodes = [p for p in cell.ports if p in ['Z', 'ZN', 'Y', 'YN', 'CO', 'S']]
+        if not output_nodes:
+            output_nodes = ['Z']
+    return output_nodes, sorted(potential_inputs)
+
+
+def _build_transistor_info_stage_aware_tsmc(cell, extractor):
+    """TSMC: transistor_info with resolved gate net + gate_raw terminal."""
+    transistor_info = {}
+    transistor_nodes = []
+    for trans in cell.transistors:
+        trans_type = 1.0 if 'nmos' in trans.type.lower() else -1.0
+        trans_width = round(trans.width / 1000.0, 4) if trans.width else 0.14
+        mos_name = trans.name.replace('X', '')
+        gate_terminal = f"{mos_name}:GATE"
+        resolved_gate = (
+            extractor._resolve_node_connection(cell, gate_terminal)
+            if gate_terminal in cell.connections else trans.gate
+        )
+        transistor_info[trans.name] = {
+            'type': trans_type,
+            'width': trans_width,
+            'gate': resolved_gate,
+            'gate_raw': trans.gate,
+            'source': trans.source,
+            'drain': trans.drain,
+        }
+        transistor_nodes.append(trans.name)
+    return transistor_info, transistor_nodes
+
+
+def _compute_intermediate_gate_widths_tsmc(cell, extractor, gate_set):
+    """TSMC: per-gate sum of widths of transistors whose resolved gate equals each gate."""
+    if not gate_set:
+        return {}
+    widths = {}
+    for gate_node in gate_set:
+        width_sum = 0.0
+        controlled_count = 0
+        for trans in cell.transistors:
+            mos_name = trans.name.replace('X', '')
+            gate_terminal = f"{mos_name}:GATE"
+            resolved_gate = extractor._resolve_node_connection(cell, gate_terminal)
+            if resolved_gate == gate_node:
+                trans_width = round(trans.width / 1000.0, 4) if trans.width else 0.14
+                width_sum += trans_width
+                controlled_count += 1
+        widths[gate_node] = round(width_sum, 4)
+        if controlled_count > 0:
+            print(f"         {gate_node}: width={width_sum:.4f} ({controlled_count} transistors)")
+    return widths
+
+
+def _compute_input_connected_transistors_tsmc(cell, extractor, external_inputs):
+    """TSMC: transistor names whose resolved gate is an external input."""
+    external_inputs_set = set(external_inputs)
+    result = []
+    for trans in cell.transistors:
+        mos_name = trans.name.replace('X', '')
+        gate_terminal = f"{mos_name}:GATE"
+        resolved_gate = extractor._resolve_node_connection(cell, gate_terminal)
+        if resolved_gate in external_inputs_set:
+            result.append(trans.name)
+    return result
+
+
+# ============================================================================
 # ASAP7 CDL Multi-Stage Topology
 # ============================================================================
 
@@ -549,27 +874,27 @@ def precompute_stage_aware_topology_asap7(cdl_path: str, output_path: str, logic
                                           gate_control_weight=0.0, input_port_weight=0.0,
                                           bidirection=False):
     """
-    Pre-compute multi-stage topology from ASAP7 CDL file.
+    Pre-compute multi-stage (rise + fall) topology cache for ASAP7 from a CDL file.
 
     Supports complex cells (XOR, XNOR, etc.) with more than 2 stages.
 
     Args:
-        cdl_path: CDL file path
-        output_path: Output cache file path (.pth)
-        logic_keywords: Logic cell keywords
-        gate_control_weight: Weight for gate control edges (default 0.0 = disabled).
-                            If > 0, adds edges from intermediate gates to controlled transistors.
-        input_port_weight: Weight for input port edges (default 0.0 = disabled).
-                          If > 0, adds input port nodes and edges to controlled transistors.
-        bidirection: If True, makes all edges bidirectional (adds reverse edges).
-    """
+        cdl_path: CDL file path.
+        output_path: Output cache file (.pth).
+        logic_keywords: Substring matchers identifying logic cells (default list provided).
+        gate_control_weight: When > 0, add intermediate-gate→controlled-transistor edges.
+        input_port_weight: When > 0, add input-port nodes + edges to controlled transistors.
+        bidirection: When True, make every edge bidirectional in the adjacency matrix.
 
+    Returns:
+        stage_aware_cache: {cell_name: per-cell topology dict} (also saved to disk).
+    """
     if logic_keywords is None:
         logic_keywords = [
             'AND', 'NAND', 'OR', 'NOR', 'XOR', 'XNOR',
             'INV', 'BUF', 'MUX', 'AO', 'OA', 'AOI', 'OAI',
             'MAJ', 'FA', 'HA', 'MAJI',
-            'A2O1', 'O2A1'  # A2O1A1O1I, O2A1O1I series
+            'A2O1', 'O2A1',
         ]
 
     print("=" * 80)
@@ -583,282 +908,84 @@ def precompute_stage_aware_topology_asap7(cdl_path: str, output_path: str, logic
     print(f"Bidirectional edges: {'enabled' if bidirection else 'disabled'}")
     print("=" * 80)
 
-    # Load CDL file
     print("\n Loading CDL file...")
     transformer = CDLLoader(cdl_path)
     extractor = ASAP7StageAwareExtractor(cdl_path)
-
     print(f"   Loaded {len(transformer.all_logic_cells)} logic cells")
 
-    # Pre-compute topology for each logic cell
+    power_nodes = ['VDD', 'VSS']
+    # Known timeouts due to large transistor counts; safe to skip.
+    skip_cells = {'nd4d3bwp30p140', 'nr4d3bwp30p140'}
     stage_aware_cache = {}
 
-    # Skip problematic cells (too many transistors, causing timeout)
-    skip_cells = {'nd4d3bwp30p140','nr4d3bwp30p140'}
-
     for cell_name, spice_cell in transformer.all_logic_cells.items():
-        # Filter logic cells only
-        is_logic_cell = any(keyword in cell_name for keyword in logic_keywords)
-
-        if not is_logic_cell:
+        if not any(keyword in cell_name for keyword in logic_keywords):
             continue
-
-        # Skip problematic cells
         if cell_name in skip_cells:
             print(f"\n ⚠️  Skipping {cell_name} (known timeout issue)")
             continue
 
         print(f"\n Processing: {cell_name}")
-
-        # Auto-detect output nodes from cell ports
-        power_nodes = ['VDD', 'VSS']
-        all_ports = spice_cell.ports
-
-        # Identify external inputs and outputs from ports
-        potential_inputs = []
-        potential_outputs = []
-
-        for port in all_ports:
-            if port not in power_nodes:
-                is_used_as_gate = any(t.gate == port for t in spice_cell.transistors)
-                is_used_as_output = any(port in [t.source, t.drain] for t in spice_cell.transistors)
-
-                if is_used_as_output:
-                    potential_outputs.append(port)
-                elif is_used_as_gate:
-                    potential_inputs.append(port)
-
-        # Final output nodes
-        if potential_outputs:
-            output_nodes = potential_outputs
-        else:
-            output_nodes = [port for port in all_ports
-                           if port not in power_nodes and port not in potential_inputs]
-
-        if not output_nodes:
-            output_nodes = ['Y']
-            print(f"   No outputs detected, using default: {output_nodes}")
-
-        external_inputs = sorted(potential_inputs)
-
+        output_nodes, external_inputs = _detect_ports_stage_aware_asap7(spice_cell, power_nodes)
         print(f"   Inputs: {external_inputs}")
         print(f"   Outputs: {output_nodes}")
 
-        # Get transistor information
-        transistor_info = {}
-        transistor_nodes = []
+        transistor_info, transistor_nodes = _build_transistor_info_stage_aware_asap7(spice_cell)
 
-        for trans in spice_cell.transistors:
-            trans_type = 1.0 if 'nmos' in trans.type.lower() else -1.0
-            trans_width = trans.width / 1000.0  # nm to um
-            transistor_info[trans.name] = {
-                'type': trans_type,
-                'width': trans_width,
-                'gate': trans.gate,
-                'source': trans.source,
-                'drain': trans.drain
-            }
-            transistor_nodes.append(trans.name)
-
-        # For each output node, compute pull-up and pull-down paths
         output_topologies = {}
-
         for output_node in output_nodes:
             print(f"\n   Output: {output_node}")
 
-            # 1. Pull-up path (rise transition) - Multi-stage
             print(f"      Computing pull-up path (rise)...")
-            rise_multi_stage = extractor.extract_multi_stage_paths(
-                spice_cell, external_inputs, 'rise_transition', output_nodes=[output_node]
+            rise_multi = extractor.extract_multi_stage_paths(
+                spice_cell, external_inputs, 'rise_transition', output_nodes=[output_node],
+            )
+            rise = _build_directional_path(
+                extractor, rise_multi, power_nodes, output_node, external_inputs,
+                transistor_info, gate_control_weight, input_port_weight, bidirection,
             )
 
-            # Collect nodes from all stages
-            rise_nodes = power_nodes + [output_node]
-            rise_nodes += rise_multi_stage.all_intermediate_nodes
-            for stage in rise_multi_stage.stages:
-                rise_nodes += stage.transistors
-            # Add external input nodes if input_port_weight > 0 (similar to full_graph)
-            if input_port_weight > 0:
-                rise_nodes += external_inputs
-            rise_nodes = list(dict.fromkeys(rise_nodes))
-
-            rise_edges, rise_edge_attrs = extractor.create_multi_stage_edges(rise_multi_stage, rise_nodes)
-            rise_edge_index = torch.tensor(rise_edges, dtype=torch.int64).T if rise_edges else torch.empty((2, 0), dtype=torch.int64)
-            rise_edge_attr = torch.tensor(rise_edge_attrs, dtype=torch.float32) if rise_edge_attrs else torch.empty((0, 5), dtype=torch.float32)
-
-            # Pre-compute adjacency matrix
-            rise_num_nodes = len(rise_nodes)
-            rise_adjacency_matrix = torch.zeros(rise_num_nodes, rise_num_nodes, dtype=torch.float32)
-            if rise_edges:
-                for i in range(rise_edge_index.shape[1]):
-                    src = rise_edge_index[0][i]
-                    dst = rise_edge_index[1][i]
-                    rise_adjacency_matrix[src][dst] = 1.0
-                    if bidirection:
-                        rise_adjacency_matrix[dst][src] = 1.0  # Add reverse edge
-
-            # Add gate control edges if enabled
-            if gate_control_weight > 0:
-                rise_stage_info_temp = _multi_stage_to_dict(rise_multi_stage, external_inputs)
-                rise_gate_ctrl_count = add_gate_control_edges(
-                    rise_adjacency_matrix, rise_nodes, rise_stage_info_temp,
-                    transistor_info, external_inputs, gate_control_weight
-                )
-                if rise_gate_ctrl_count > 0:
-                    print(f"      Added {rise_gate_ctrl_count} gate control edges (weight={gate_control_weight})")
-
-            # Add input port edges if enabled
-            if input_port_weight > 0:
-                rise_input_port_count = add_input_port_edges(
-                    rise_adjacency_matrix, rise_nodes, transistor_info,
-                    external_inputs, input_port_weight
-                )
-                if rise_input_port_count > 0:
-                    print(f"      Added {rise_input_port_count} input port edges (weight={input_port_weight})")
-
-            # 2. Pull-down path (fall transition) - Multi-stage
             print(f"      Computing pull-down path (fall)...")
-            fall_multi_stage = extractor.extract_multi_stage_paths(
-                spice_cell, external_inputs, 'fall_transition', output_nodes=[output_node]
+            fall_multi = extractor.extract_multi_stage_paths(
+                spice_cell, external_inputs, 'fall_transition', output_nodes=[output_node],
+            )
+            fall = _build_directional_path(
+                extractor, fall_multi, power_nodes, output_node, external_inputs,
+                transistor_info, gate_control_weight, input_port_weight, bidirection,
             )
 
-            # Collect nodes from all stages
-            fall_nodes = power_nodes + [output_node]
-            fall_nodes += fall_multi_stage.all_intermediate_nodes
-            for stage in fall_multi_stage.stages:
-                fall_nodes += stage.transistors
-            # Add external input nodes if input_port_weight > 0 (similar to full_graph)
-            if input_port_weight > 0:
-                fall_nodes += external_inputs
-            fall_nodes = list(dict.fromkeys(fall_nodes))
+            rise_stage_info = _multi_stage_to_dict(rise_multi, external_inputs)
+            fall_stage_info = _multi_stage_to_dict(fall_multi, external_inputs)
 
-            fall_edges, fall_edge_attrs = extractor.create_multi_stage_edges(fall_multi_stage, fall_nodes)
-            fall_edge_index = torch.tensor(fall_edges, dtype=torch.int64).T if fall_edges else torch.empty((2, 0), dtype=torch.int64)
-            fall_edge_attr = torch.tensor(fall_edge_attrs, dtype=torch.float32) if fall_edge_attrs else torch.empty((0, 5), dtype=torch.float32)
+            gate_set = set(rise_stage_info.get('intermediate_gates', [])
+                           + fall_stage_info.get('intermediate_gates', []))
+            widths = _compute_intermediate_gate_widths_asap7(spice_cell, gate_set)
+            if widths:
+                rise_stage_info['intermediate_gate_widths'] = widths
+                fall_stage_info['intermediate_gate_widths'] = widths
 
-            # Pre-compute adjacency matrix
-            fall_num_nodes = len(fall_nodes)
-            fall_adjacency_matrix = torch.zeros(fall_num_nodes, fall_num_nodes, dtype=torch.float32)
-            if fall_edges:
-                for i in range(fall_edge_index.shape[1]):
-                    src = fall_edge_index[0][i]
-                    dst = fall_edge_index[1][i]
-                    fall_adjacency_matrix[src][dst] = 1.0
-                    if bidirection:
-                        fall_adjacency_matrix[dst][src] = 1.0  # Add reverse edge
-
-            # Add gate control edges if enabled
-            if gate_control_weight > 0:
-                fall_stage_info_temp = _multi_stage_to_dict(fall_multi_stage, external_inputs)
-                fall_gate_ctrl_count = add_gate_control_edges(
-                    fall_adjacency_matrix, fall_nodes, fall_stage_info_temp,
-                    transistor_info, external_inputs, gate_control_weight
-                )
-                if fall_gate_ctrl_count > 0:
-                    print(f"      Added {fall_gate_ctrl_count} gate control edges (weight={gate_control_weight})")
-
-            # Add input port edges if enabled
-            if input_port_weight > 0:
-                fall_input_port_count = add_input_port_edges(
-                    fall_adjacency_matrix, fall_nodes, transistor_info,
-                    external_inputs, input_port_weight
-                )
-                if fall_input_port_count > 0:
-                    print(f"      Added {fall_input_port_count} input port edges (weight={input_port_weight})")
-
-            # Convert multi-stage info to serializable format (filter external inputs)
-            rise_stage_info = _multi_stage_to_dict(rise_multi_stage, external_inputs)
-            fall_stage_info = _multi_stage_to_dict(fall_multi_stage, external_inputs)
-
-            # Compute intermediate gate widths for ASAP7 (similar to TSMC logic)
-            # For each intermediate gate, sum widths of transistors controlled by that gate
-            all_intermediate_gates = set(rise_stage_info.get('intermediate_gates', []) +
-                                         fall_stage_info.get('intermediate_gates', []))
-
-            intermediate_gate_widths = {}
-
-            if all_intermediate_gates:
-                # Build gate -> transistors mapping
-                for gate_node in all_intermediate_gates:
-                    width_sum = 0.0
-                    controlled_count = 0
-
-                    for trans in spice_cell.transistors:
-                        # In ASAP7 CDL, trans.gate is the direct gate net name
-                        if trans.gate == gate_node:
-                            trans_width = round(trans.width / 1000.0, 4) if trans.width else 0.054
-                            width_sum += trans_width
-                            controlled_count += 1
-
-                    intermediate_gate_widths[gate_node] = round(width_sum, 4)
-                    if controlled_count > 0:
-                        print(f"         {gate_node}: width={width_sum:.4f} ({controlled_count} transistors)")
-
-                # Store intermediate_gate_widths in stage_info for both pull_up and pull_down
-                rise_stage_info['intermediate_gate_widths'] = intermediate_gate_widths
-                fall_stage_info['intermediate_gate_widths'] = intermediate_gate_widths
-
-            # Store topology for this output
             output_topologies[output_node] = {
-                'pull_up': {
-                    'all_nodes': rise_nodes,
-                    'edge_index': rise_edge_index,
-                    'edge_attr': rise_edge_attr,
-                    'adjacency_matrix': rise_adjacency_matrix,
-                    'stage_info': rise_stage_info,
-                    'num_nodes': len(rise_nodes),
-                    'num_edges': len(rise_edges) if rise_edges else 0
-                },
-                'pull_down': {
-                    'all_nodes': fall_nodes,
-                    'edge_index': fall_edge_index,
-                    'edge_attr': fall_edge_attr,
-                    'adjacency_matrix': fall_adjacency_matrix,
-                    'stage_info': fall_stage_info,
-                    'num_nodes': len(fall_nodes),
-                    'num_edges': len(fall_edges) if fall_edges else 0
-                }
+                'pull_up': _make_path_cache_entry(rise, rise_stage_info),
+                'pull_down': _make_path_cache_entry(fall, fall_stage_info),
             }
+            print(f"      Pull-up: {len(rise['nodes'])} nodes, {len(rise['edges'])} edges ({rise_multi.num_stages}-stage)")
+            print(f"      Pull-down: {len(fall['nodes'])} nodes, {len(fall['edges'])} edges ({fall_multi.num_stages}-stage)")
 
-            print(f"      Pull-up: {len(rise_nodes)} nodes, {len(rise_edges) if rise_edges else 0} edges ({rise_multi_stage.num_stages}-stage)")
-            print(f"      Pull-down: {len(fall_nodes)} nodes, {len(fall_edges) if fall_edges else 0} edges ({fall_multi_stage.num_stages}-stage)")
-
-        # Compute input_connected_transistors - transistors whose gate is connected to external input
-        # These transistors should receive input_slew in apply_stage_aware_topology
-        input_connected_transistors = []
-        external_inputs_set = set(external_inputs)
-
-        for trans in spice_cell.transistors:
-            # In ASAP7 CDL, trans.gate is the direct gate net name
-            if trans.gate in external_inputs_set:
-                input_connected_transistors.append(trans.name)
-
+        input_connected_transistors = _compute_input_connected_transistors_asap7(spice_cell, external_inputs)
         if input_connected_transistors:
             print(f"   Input-connected transistors: {input_connected_transistors}")
 
-        # Store cell cache
         stage_aware_cache[cell_name] = {
             'external_inputs': external_inputs,
             'power_nodes': power_nodes,
             'output_nodes': output_nodes,
             'transistor_info': transistor_info,
             'transistor_nodes': transistor_nodes,
-            'input_connected_transistors': input_connected_transistors,  # For input_slew assignment
-            'output_topologies': output_topologies
+            'input_connected_transistors': input_connected_transistors,
+            'output_topologies': output_topologies,
         }
 
-    # Save cache
-    print(f"\n Saving stage-aware topology cache...")
-    print(f"   Total cells cached: {len(stage_aware_cache)}")
-
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(stage_aware_cache, output_path)
-
-    print(f"   Saved to: {output_path}")
-
-    # Print summary
-    _print_cache_summary(stage_aware_cache)
-
+    _save_stage_aware_cache(stage_aware_cache, output_path)
     return stage_aware_cache
 
 
@@ -870,29 +997,30 @@ def precompute_stage_aware_topology_tsmc(spi_path: str, output_path: str, logic_
                                           weighted=False, gate_control_weight=0.0, input_port_weight=0.0,
                                           bidirection=False, only_cells=None):
     """
-    Pre-compute multi-stage topology from TSMC SPI file.
+    Pre-compute multi-stage (rise + fall) topology cache for TSMC from a SPI file.
 
-    Supports complex cells (XOR, XNOR, etc.) with more than 2 stages.
-
-    Loop-closing is always applied: cross-coupled storage feedback inside FF cells
-    (DFCNQD1, SDFSNQD0, SDFCSNQD1) is preserved as an explicit cycle in the graph;
-    for purely combinational cells the loop-closing pass is a no-op.
+    Supports complex cells (XOR, XNOR, etc.) with more than 2 stages. Loop-closing is
+    always applied: cross-coupled storage feedback inside FF cells (DFCNQD1, SDFSNQD0,
+    SDFCSNQD1) is preserved as an explicit cycle in the graph; for purely combinational
+    cells the loop-closing pass is a no-op.
 
     Args:
-        spi_path: TSMC SPI file path
-        output_path: Output cache file path (.pth)
-        logic_keywords: Logic cell keywords
-        weighted: True면 저항값 기반 weighted adjacency matrix 생성
-        gate_control_weight: Weight for gate control edges (default 0.0 = disabled).
-                            If > 0, adds edges from intermediate gates to controlled transistors.
-                            Typical value: 0.5 (distinguishes from current flow edges with weight 1.0)
-        input_port_weight: Weight for input port edges (default 0.0 = disabled).
-                          If > 0, adds input port nodes (A, B, C, etc.) and edges to controlled transistors.
-                          Similar to full_graph topology. Typical value: 0.5
-        bidirection: If True, makes all edges bidirectional (adds reverse edges).
+        spi_path: TSMC SPI file path.
+        output_path: Output cache file (.pth).
+        logic_keywords: Substring matchers identifying logic cells (default list provided).
+        weighted: When True, additionally build a resistance-weighted adjacency matrix.
+        gate_control_weight: When > 0, add intermediate-gate→controlled-transistor edges
+            (typical value 0.5 — distinguishes from current-flow edges with weight 1.0).
+        input_port_weight: When > 0, add input-port nodes and edges to controlled
+            transistors (similar to full_graph topology, typical value 0.5).
+        bidirection: When True, make every edge bidirectional in the adjacency matrix.
+        only_cells: Optional whitelist of cell names to process.
+
+    Returns:
+        stage_aware_cache: {cell_name: per-cell topology dict} (also saved to disk).
     """
     from utils.spi_parser import SPIParser
-    from utils.stage_aware_extractor_tsmc import TSMCStageAwareExtractor
+    from utils.stage_aware_extractor_tsmc import TSMCStageAwareExtractor, MultiStageInfo
 
     if logic_keywords is None:
         logic_keywords = [
@@ -900,7 +1028,7 @@ def precompute_stage_aware_topology_tsmc(spi_path: str, output_path: str, logic_
             'MUX', 'BUF', 'HA', 'FA', 'MAJ',
             'AOI', 'OAI', 'AO', 'OA',
             'CKND', 'CKAN', 'CKNR',
-            'DEL', 'DF', 'SDF'
+            'DEL', 'DF', 'SDF',
         ]
 
     print("=" * 80)
@@ -915,14 +1043,12 @@ def precompute_stage_aware_topology_tsmc(spi_path: str, output_path: str, logic_
     print(f"Bidirectional edges: {'enabled' if bidirection else 'disabled'}")
     print("=" * 80)
 
-    # Load SPI file
     print("\n Loading TSMC SPI file...")
     parser = SPIParser(spi_path)
     extractor = TSMCStageAwareExtractor(spi_path)
-
     print(f"   Loaded {len(parser.logic_cells)} logic cells")
 
-    # Pre-compute topology for each logic cell
+    power_nodes = ['VDD', 'VSS']
     stage_aware_cache = {}
 
     for cell_name, cell in parser.logic_cells.items():
@@ -930,80 +1056,12 @@ def precompute_stage_aware_topology_tsmc(spi_path: str, output_path: str, logic_
             continue
         print(f"\n Processing: {cell_name}")
 
-        # Get ports
-        power_nodes = ['VDD', 'VSS']
-        all_ports = cell.ports
-
-        # Identify inputs and outputs from ports
-        potential_inputs = []
-        potential_outputs = []
-
-        for port in all_ports:
-            if port in power_nodes:
-                continue
-
-            is_used_as_gate = False
-            is_used_as_output = False
-
-            for trans in cell.transistors:
-                mos_name = trans.name.replace('X', '')
-                gate_term = f"{mos_name}:GATE"
-                drain_term = f"{mos_name}:DRN"
-                source_term = f"{mos_name}:SRC"
-
-                if gate_term in cell.connections:
-                    connected = extractor._resolve_node_connection(cell, gate_term)
-                    if connected == port:
-                        is_used_as_gate = True
-
-                for term in [drain_term, source_term]:
-                    if term in cell.connections:
-                        connected = extractor._resolve_node_connection(cell, term)
-                        if connected == port:
-                            is_used_as_output = True
-
-            if is_used_as_output and not is_used_as_gate:
-                potential_outputs.append(port)
-            elif is_used_as_gate:
-                potential_inputs.append(port)
-
-        # Finalize outputs
-        if potential_outputs:
-            output_nodes = potential_outputs
-        else:
-            output_nodes = [p for p in all_ports if p in ['Z', 'ZN', 'Y', 'YN', 'CO', 'S']]
-            if not output_nodes:
-                output_nodes = ['Z']
-
-        external_inputs = sorted(potential_inputs)
-
+        output_nodes, external_inputs = _detect_ports_stage_aware_tsmc(cell, extractor, power_nodes)
         print(f"   Inputs: {external_inputs}")
         print(f"   Outputs: {output_nodes}")
 
-        # Get transistor information
-        transistor_info = {}
-        transistor_nodes = []
+        transistor_info, transistor_nodes = _build_transistor_info_stage_aware_tsmc(cell, extractor)
 
-        for trans in cell.transistors:
-            trans_type = 1.0 if 'nmos' in trans.type.lower() else -1.0
-            trans_width = round(trans.width / 1000.0, 4) if trans.width else 0.14
-
-            # Resolve gate terminal to actual net (e.g., M1:GATE -> I or A1)
-            mos_name = trans.name.replace('X', '')
-            gate_terminal = f"{mos_name}:GATE"
-            resolved_gate = extractor._resolve_node_connection(cell, gate_terminal) if gate_terminal in cell.connections else trans.gate
-
-            transistor_info[trans.name] = {
-                'type': trans_type,
-                'width': trans_width,
-                'gate': resolved_gate,  # Store resolved gate (actual net name)
-                'gate_raw': trans.gate,  # Keep raw gate terminal for debugging
-                'source': trans.source,
-                'drain': trans.drain
-            }
-            transistor_nodes.append(trans.name)
-
-        # Build resistance and capacitance maps if weighted mode
         resistance_map = None
         node_capacitance_map = None
         if weighted:
@@ -1012,288 +1070,75 @@ def precompute_stage_aware_topology_tsmc(spi_path: str, output_path: str, logic_
             print(f"   Built resistance map: {len(resistance_map) // 2} unique connections")
             print(f"   Built capacitance map: {len(node_capacitance_map)} nodes")
 
-        # For each output node, compute pull-up and pull-down paths (multi-stage)
         output_topologies = {}
-
         for output_node in output_nodes:
             print(f"\n   Output: {output_node}")
 
-            # 1. Pull-up path (rise transition) - Multi-stage
             print(f"      Computing pull-up path (rise)...")
             try:
-                rise_multi_stage = extractor.classify_multi_stage_structure(
+                rise_multi = extractor.classify_multi_stage_structure(
                     cell_name, external_inputs, 'rise_transition', output_nodes=[output_node],
                 )
-
-                # Collect nodes from all stages
-                rise_nodes = power_nodes + [output_node]
-                rise_nodes += rise_multi_stage.all_intermediate_nodes
-                for stage in rise_multi_stage.stages:
-                    rise_nodes += stage.transistors
-                # Add external input nodes if input_port_weight > 0 (similar to full_graph)
-                if input_port_weight > 0:
-                    rise_nodes += external_inputs
-                rise_nodes = list(dict.fromkeys(rise_nodes))
-
-                rise_edges, rise_edge_attrs = extractor.create_multi_stage_edges(rise_multi_stage, rise_nodes)
-                rise_edge_index = torch.tensor(rise_edges, dtype=torch.int64).T if rise_edges else torch.empty((2, 0), dtype=torch.int64)
-                rise_edge_attr = torch.tensor(rise_edge_attrs, dtype=torch.float32) if rise_edge_attrs else torch.empty((0, 5), dtype=torch.float32)
-
-                # Pre-compute adjacency matrix (always binary: 0 or 1)
-                rise_num_nodes = len(rise_nodes)
-                rise_adjacency_matrix = torch.zeros(rise_num_nodes, rise_num_nodes, dtype=torch.float32)
-                rise_weighted_adjacency_matrix = None
-
-                if rise_edges:
-                    # Binary adjacency matrix
-                    for i in range(rise_edge_index.shape[1]):
-                        src = rise_edge_index[0][i]
-                        dst = rise_edge_index[1][i]
-                        rise_adjacency_matrix[src][dst] = 1.0
-                        if bidirection:
-                            rise_adjacency_matrix[dst][src] = 1.0  # Add reverse edge
-
-                    if weighted and resistance_map:
-                        # Weighted adjacency matrix (separate from binary)
-                        rise_edge_weights = get_edge_resistance(rise_edge_index, rise_nodes, resistance_map, cell)
-                        rise_weighted_raw = torch.zeros(rise_num_nodes, rise_num_nodes, dtype=torch.float32)
-                        for i in range(rise_edge_index.shape[1]):
-                            src = rise_edge_index[0][i]
-                            dst = rise_edge_index[1][i]
-                            rise_weighted_raw[src][dst] = rise_edge_weights[i]
-                            if bidirection:
-                                rise_weighted_raw[dst][src] = rise_edge_weights[i]  # Same weight for reverse
-                        # Normalize the weighted adjacency matrix
-                        rise_weighted_adjacency_matrix = normalize_adjacency_weights_per_cell(rise_weighted_raw)
-
-                # Add gate control edges if enabled
-                if gate_control_weight > 0:
-                    rise_stage_info_temp = _multi_stage_to_dict(rise_multi_stage, external_inputs)
-                    rise_gate_ctrl_count = add_gate_control_edges(
-                        rise_adjacency_matrix, rise_nodes, rise_stage_info_temp,
-                        transistor_info, external_inputs, gate_control_weight
-                    )
-                    if rise_gate_ctrl_count > 0:
-                        print(f"      Added {rise_gate_ctrl_count} gate control edges (weight={gate_control_weight})")
-
-                # Add input port edges if enabled (connects external inputs to controlled transistors)
-                if input_port_weight > 0:
-                    rise_input_port_count = add_input_port_edges(
-                        rise_adjacency_matrix, rise_nodes, transistor_info,
-                        external_inputs, input_port_weight
-                    )
-                    if rise_input_port_count > 0:
-                        print(f"      Added {rise_input_port_count} input port edges (weight={input_port_weight})")
-
+                rise = _build_directional_path(
+                    extractor, rise_multi, power_nodes, output_node, external_inputs,
+                    transistor_info, gate_control_weight, input_port_weight, bidirection,
+                    weighted=weighted, resistance_map=resistance_map, cell=cell,
+                )
             except Exception as e:
                 print(f"      Warning: Error computing pull-up path: {e}")
-                rise_nodes = power_nodes + [output_node] + external_inputs
-                rise_edge_index = torch.empty((2, 0), dtype=torch.int64)
-                rise_edge_attr = torch.empty((0, 5), dtype=torch.float32)
-                rise_adjacency_matrix = torch.zeros(len(rise_nodes), len(rise_nodes), dtype=torch.float32)
-                rise_weighted_adjacency_matrix = None
-                # Create dummy multi-stage info
-                from utils.stage_aware_extractor_tsmc import MultiStageInfo
-                rise_multi_stage = MultiStageInfo(num_stages=1, stages=[], all_intermediate_nodes=[])
+                rise = _empty_path_fallback(power_nodes, output_node, external_inputs)
+                rise_multi = MultiStageInfo(num_stages=1, stages=[], all_intermediate_nodes=[])
 
-            # 2. Pull-down path (fall transition) - Multi-stage
             print(f"      Computing pull-down path (fall)...")
             try:
-                fall_multi_stage = extractor.classify_multi_stage_structure(
+                fall_multi = extractor.classify_multi_stage_structure(
                     cell_name, external_inputs, 'fall_transition', output_nodes=[output_node],
                 )
-
-                # Collect nodes from all stages
-                fall_nodes = power_nodes + [output_node]
-                fall_nodes += fall_multi_stage.all_intermediate_nodes
-                for stage in fall_multi_stage.stages:
-                    fall_nodes += stage.transistors
-                # Add external input nodes if input_port_weight > 0 (similar to full_graph)
-                if input_port_weight > 0:
-                    fall_nodes += external_inputs
-                fall_nodes = list(dict.fromkeys(fall_nodes))
-
-                fall_edges, fall_edge_attrs = extractor.create_multi_stage_edges(fall_multi_stage, fall_nodes)
-                fall_edge_index = torch.tensor(fall_edges, dtype=torch.int64).T if fall_edges else torch.empty((2, 0), dtype=torch.int64)
-                fall_edge_attr = torch.tensor(fall_edge_attrs, dtype=torch.float32) if fall_edge_attrs else torch.empty((0, 5), dtype=torch.float32)
-
-                # Pre-compute adjacency matrix (always binary: 0 or 1)
-                fall_num_nodes = len(fall_nodes)
-                fall_adjacency_matrix = torch.zeros(fall_num_nodes, fall_num_nodes, dtype=torch.float32)
-                fall_weighted_adjacency_matrix = None
-
-                if fall_edges:
-                    # Binary adjacency matrix
-                    for i in range(fall_edge_index.shape[1]):
-                        src = fall_edge_index[0][i]
-                        dst = fall_edge_index[1][i]
-                        fall_adjacency_matrix[src][dst] = 1.0
-                        if bidirection:
-                            fall_adjacency_matrix[dst][src] = 1.0  # Add reverse edge
-
-                    if weighted and resistance_map:
-                        # Weighted adjacency matrix (separate from binary)
-                        fall_edge_weights = get_edge_resistance(fall_edge_index, fall_nodes, resistance_map, cell)
-                        fall_weighted_raw = torch.zeros(fall_num_nodes, fall_num_nodes, dtype=torch.float32)
-                        for i in range(fall_edge_index.shape[1]):
-                            src = fall_edge_index[0][i]
-                            dst = fall_edge_index[1][i]
-                            fall_weighted_raw[src][dst] = fall_edge_weights[i]
-                            if bidirection:
-                                fall_weighted_raw[dst][src] = fall_edge_weights[i]  # Same weight for reverse
-                        # Normalize the weighted adjacency matrix
-                        fall_weighted_adjacency_matrix = normalize_adjacency_weights_per_cell(fall_weighted_raw)
-
-                # Add gate control edges if enabled
-                if gate_control_weight > 0:
-                    fall_stage_info_temp = _multi_stage_to_dict(fall_multi_stage, external_inputs)
-                    fall_gate_ctrl_count = add_gate_control_edges(
-                        fall_adjacency_matrix, fall_nodes, fall_stage_info_temp,
-                        transistor_info, external_inputs, gate_control_weight
-                    )
-                    if fall_gate_ctrl_count > 0:
-                        print(f"      Added {fall_gate_ctrl_count} gate control edges (weight={gate_control_weight})")
-
-                # Add input port edges if enabled (connects external inputs to controlled transistors)
-                if input_port_weight > 0:
-                    fall_input_port_count = add_input_port_edges(
-                        fall_adjacency_matrix, fall_nodes, transistor_info,
-                        external_inputs, input_port_weight
-                    )
-                    if fall_input_port_count > 0:
-                        print(f"      Added {fall_input_port_count} input port edges (weight={input_port_weight})")
-
+                fall = _build_directional_path(
+                    extractor, fall_multi, power_nodes, output_node, external_inputs,
+                    transistor_info, gate_control_weight, input_port_weight, bidirection,
+                    weighted=weighted, resistance_map=resistance_map, cell=cell,
+                )
             except Exception as e:
                 print(f"      Warning: Error computing pull-down path: {e}")
-                fall_nodes = power_nodes + [output_node] + external_inputs
-                fall_edge_index = torch.empty((2, 0), dtype=torch.int64)
-                fall_edge_attr = torch.empty((0, 5), dtype=torch.float32)
-                fall_adjacency_matrix = torch.zeros(len(fall_nodes), len(fall_nodes), dtype=torch.float32)
-                fall_weighted_adjacency_matrix = None
-                # Create dummy multi-stage info
-                from utils.stage_aware_extractor_tsmc import MultiStageInfo
-                fall_multi_stage = MultiStageInfo(num_stages=1, stages=[], all_intermediate_nodes=[])
+                fall = _empty_path_fallback(power_nodes, output_node, external_inputs)
+                fall_multi = MultiStageInfo(num_stages=1, stages=[], all_intermediate_nodes=[])
 
-            # Convert multi-stage info to serializable format (filter external inputs)
-            rise_stage_info = _multi_stage_to_dict(rise_multi_stage, external_inputs)
-            fall_stage_info = _multi_stage_to_dict(fall_multi_stage, external_inputs)
+            rise_stage_info = _multi_stage_to_dict(rise_multi, external_inputs)
+            fall_stage_info = _multi_stage_to_dict(fall_multi, external_inputs)
 
-            # Store topology for this output
-            pull_up_data = {
-                'all_nodes': rise_nodes,
-                'edge_index': rise_edge_index,
-                'edge_attr': rise_edge_attr,
-                'adjacency_matrix': rise_adjacency_matrix,
-                'stage_info': rise_stage_info,
-                'num_nodes': len(rise_nodes),
-                'num_edges': len(rise_edges) if rise_edges else 0
-            }
-            pull_down_data = {
-                'all_nodes': fall_nodes,
-                'edge_index': fall_edge_index,
-                'edge_attr': fall_edge_attr,
-                'adjacency_matrix': fall_adjacency_matrix,
-                'stage_info': fall_stage_info,
-                'num_nodes': len(fall_nodes),
-                'num_edges': len(fall_edges) if fall_edges else 0
-            }
-
-            # Add weighted adjacency matrices if available
-            if rise_weighted_adjacency_matrix is not None:
-                pull_up_data['weighted_adjacency_matrix'] = rise_weighted_adjacency_matrix
-            if fall_weighted_adjacency_matrix is not None:
-                pull_down_data['weighted_adjacency_matrix'] = fall_weighted_adjacency_matrix
+            gate_set = set(rise_stage_info.get('intermediate_gates', [])
+                           + fall_stage_info.get('intermediate_gates', []))
+            widths = _compute_intermediate_gate_widths_tsmc(cell, extractor, gate_set)
+            if widths:
+                rise_stage_info['intermediate_gate_widths'] = widths
+                fall_stage_info['intermediate_gate_widths'] = widths
 
             output_topologies[output_node] = {
-                'pull_up': pull_up_data,
-                'pull_down': pull_down_data
+                'pull_up': _make_path_cache_entry(rise, rise_stage_info),
+                'pull_down': _make_path_cache_entry(fall, fall_stage_info),
             }
+            print(f"      Pull-up: {len(rise['nodes'])} nodes, {len(rise['edges'])} edges ({rise_multi.num_stages}-stage)")
+            print(f"      Pull-down: {len(fall['nodes'])} nodes, {len(fall['edges'])} edges ({fall_multi.num_stages}-stage)")
 
-            # Compute intermediate gate widths for TSMC (CMOS logic)
-            # For each intermediate gate, sum widths of transistors controlled by that gate
-            # Note: external inputs are already filtered in _multi_stage_to_dict()
-            all_intermediate_gates = set(rise_stage_info.get('intermediate_gates', []) +
-                                         fall_stage_info.get('intermediate_gates', []))
-
-            intermediate_gate_widths = {}
-
-            if all_intermediate_gates:
-                # Build gate -> transistors mapping using resolved gate connections
-                for gate_node in all_intermediate_gates:
-                    width_sum = 0.0
-                    controlled_count = 0
-
-                    for trans in cell.transistors:
-                        # Resolve transistor gate to actual net
-                        mos_name = trans.name.replace('X', '')
-                        gate_terminal = f"{mos_name}:GATE"
-                        resolved_gate = extractor._resolve_node_connection(cell, gate_terminal)
-
-                        # Check if this transistor is controlled by the current gate_node
-                        if resolved_gate == gate_node:
-                            trans_width = round(trans.width / 1000.0, 4) if trans.width else 0.14
-                            width_sum += trans_width
-                            controlled_count += 1
-
-                    intermediate_gate_widths[gate_node] = round(width_sum, 4)
-                    if controlled_count > 0:
-                        print(f"         {gate_node}: width={width_sum:.4f} ({controlled_count} transistors)")
-
-                # Store intermediate_gate_widths in stage_info for both pull_up and pull_down
-                output_topologies[output_node]['pull_up']['stage_info']['intermediate_gate_widths'] = intermediate_gate_widths
-                output_topologies[output_node]['pull_down']['stage_info']['intermediate_gate_widths'] = intermediate_gate_widths
-
-            print(f"      Pull-up: {len(rise_nodes)} nodes, {len(rise_edges) if rise_edges else 0} edges ({rise_multi_stage.num_stages}-stage)")
-            print(f"      Pull-down: {len(fall_nodes)} nodes, {len(fall_edges) if fall_edges else 0} edges ({fall_multi_stage.num_stages}-stage)")
-
-        # Compute input_connected_transistors - transistors whose gate is connected to external input
-        # These transistors should receive input_slew in apply_stage_aware_topology
-        input_connected_transistors = []
-        external_inputs_set = set(external_inputs)
-
-        for trans in cell.transistors:
-            # Resolve transistor gate to actual net
-            mos_name = trans.name.replace('X', '')
-            gate_terminal = f"{mos_name}:GATE"
-            resolved_gate = extractor._resolve_node_connection(cell, gate_terminal)
-
-            # Check if this transistor's gate is connected to an external input
-            if resolved_gate in external_inputs_set:
-                input_connected_transistors.append(trans.name)
-
+        input_connected_transistors = _compute_input_connected_transistors_tsmc(cell, extractor, external_inputs)
         if input_connected_transistors:
             print(f"   Input-connected transistors: {input_connected_transistors}")
 
-        # Store cell cache
         cell_cache = {
             'external_inputs': external_inputs,
             'power_nodes': power_nodes,
             'output_nodes': output_nodes,
             'transistor_info': transistor_info,
             'transistor_nodes': transistor_nodes,
-            'input_connected_transistors': input_connected_transistors,  # For input_slew assignment
-            'output_topologies': output_topologies
+            'input_connected_transistors': input_connected_transistors,
+            'output_topologies': output_topologies,
         }
-
-        # Add node capacitance map if available (weighted mode) - apply per-cell normalization
         if node_capacitance_map is not None:
-            normalized_cap = normalize_capacitance_per_cell(node_capacitance_map)
-            cell_cache['node_capacitance'] = normalized_cap
-
+            cell_cache['node_capacitance'] = normalize_capacitance_per_cell(node_capacitance_map)
         stage_aware_cache[cell_name] = cell_cache
 
-    # Save cache
-    print(f"\n Saving stage-aware topology cache...")
-    print(f"   Total cells cached: {len(stage_aware_cache)}")
-
-    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
-    torch.save(stage_aware_cache, output_path)
-
-    print(f"   Saved to: {output_path}")
-
-    # Print summary
-    _print_cache_summary(stage_aware_cache)
-
+    _save_stage_aware_cache(stage_aware_cache, output_path)
     return stage_aware_cache
 
 
