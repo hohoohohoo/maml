@@ -688,6 +688,131 @@ class TSMCStageAwareExtractor:
             stage2_transistors=stage2_transistors
         )
 
+    def _extract_gate_nodes(self, cell, transistor_set, power_nets):
+        """Resolved gate-net names for the given transistor set, excluding power nets."""
+        gate_nodes = set()
+        for trans in cell.transistors:
+            if trans.name not in transistor_set:
+                continue
+            resolved_gate = self._resolve_node_connection(cell, trans.gate)
+            if resolved_gate and resolved_gate not in power_nets:
+                gate_nodes.add(resolved_gate)
+        return list(gate_nodes)
+
+    def _alternate_mos_polarity(self, current_mos_type):
+        """Toggle PMOS↔NMOS for the next backward stage; returns (mos_type, power_node)."""
+        return ('nmos', 'VSS') if current_mos_type == 'pmos' else ('pmos', 'VDD')
+
+    def _try_build_one_stage(self, cell, current_target_nodes, current_mos_type, current_power,
+                              stage_count, visited_transistors, visited_target_nodes,
+                              external_nets, power_nets):
+        """
+        Build one stage of the backward-traversal multi-stage analysis.
+
+        Returns (stage_data, non_external_gates, all_gates_external) on success, or
+        None when no new transistors are available (caller should stop the loop).
+        """
+        print(f"\n--- Analyzing Stage {stage_count} (from output side) ---")
+        print(f"    MOS type: {current_mos_type}, Power: {current_power}")
+        print(f"    Target nodes: {current_target_nodes}")
+
+        stage_transistors = self._find_stage_transistors(
+            cell, current_power, current_target_nodes, current_mos_type
+        ) - visited_transistors
+
+        if not stage_transistors:
+            print(f"    No new transistors found for this stage, stopping.")
+            return None
+
+        print(f"    Found transistors: {stage_transistors}")
+        visited_transistors.update(stage_transistors)
+
+        if current_mos_type == 'pmos':
+            paths_raw = self.trace_pmos_paths_tsmc(cell, current_power, current_target_nodes)
+        else:
+            paths_raw = self.trace_nmos_paths_tsmc(cell, current_power, current_target_nodes)
+        paths, transistor_list = self._paths_to_edges_tsmc(
+            paths_raw, f"Stage-{stage_count} {current_mos_type.upper()}"
+        )
+
+        gate_nodes_list = self._extract_gate_nodes(cell, set(transistor_list), power_nets)
+        print(f"    Gate nodes: {gate_nodes_list}")
+
+        # Termination + cycle filter: drop gates that are already external OR previously visited.
+        non_external_gates = [
+            g for g in gate_nodes_list
+            if g not in external_nets and g not in visited_target_nodes
+        ]
+        all_gates_external = len(non_external_gates) == 0
+        print(f"    Non-external gates (new): {non_external_gates}")
+        print(f"    All gates external or already visited? {all_gates_external}")
+
+        stage_data = StageData(
+            stage_num=0,  # assigned after reversing
+            mos_type=current_mos_type,
+            power_node=current_power,
+            target_nodes=list(current_target_nodes),
+            paths=paths,
+            transistors=transistor_list,
+            gate_nodes=gate_nodes_list,
+        )
+        return stage_data, non_external_gates, all_gates_external
+
+    def _collect_loop_closing_nets(self, stages_reversed, external_nets):
+        """Feedback nets: gate nets that are also any stage's visited target net."""
+        all_visited_targets = set()
+        for st in stages_reversed:
+            all_visited_targets.update(st.target_nodes)
+
+        loop_closing_nets = set()
+        for st in stages_reversed:
+            for g in st.gate_nodes:
+                if g not in external_nets and g in all_visited_targets:
+                    loop_closing_nets.add(g)
+        return loop_closing_nets
+
+    def _build_closing_stages_for_net(self, cell, closing_net, used_trans, power_nets):
+        """Build pull-up + pull-down closing stages for one feedback net (in-place updates used_trans)."""
+        new_stages = []
+        for cm_type, cm_power in (('pmos', 'VDD'), ('nmos', 'VSS')):
+            cand = self._find_stage_transistors(cell, cm_power, {closing_net}, cm_type) - used_trans
+            if not cand:
+                continue
+            if cm_type == 'pmos':
+                c_paths_raw = self.trace_pmos_paths_tsmc(cell, cm_power, {closing_net})
+            else:
+                c_paths_raw = self.trace_nmos_paths_tsmc(cell, cm_power, {closing_net})
+            c_paths, c_trans_list = self._paths_to_edges_tsmc(
+                c_paths_raw, f"LoopClose-{cm_type.upper()}->{closing_net}",
+            )
+            if not c_trans_list:
+                continue
+            c_gates = self._extract_gate_nodes(cell, set(c_trans_list), power_nets)
+            new_stages.append(StageData(
+                stage_num=0,
+                mos_type=cm_type,
+                power_node=cm_power,
+                target_nodes=[closing_net],
+                paths=c_paths,
+                transistors=c_trans_list,
+                gate_nodes=c_gates,
+            ))
+            used_trans.update(c_trans_list)
+            print(f"    + closing-stage {cm_type.upper()} ({cm_power} -> {closing_net}): "
+                  f"transistors={c_trans_list}, gates={c_gates}")
+        return new_stages
+
+    def _print_multi_stage_summary(self, stages_reversed):
+        """Final per-stage summary print after stage numbers are assigned."""
+        print(f"\n{'='*60}")
+        print(f"Result: {len(stages_reversed)} stages found")
+        for stage in stages_reversed:
+            print(f"  Stage {stage.stage_num}: {stage.mos_type.upper()} "
+                  f"({stage.power_node} -> {stage.target_nodes})")
+            print(f"    Transistors: {stage.transistors}")
+            print(f"    Gates: {stage.gate_nodes}")
+        print(f"{'='*60}\n")
+
     def classify_multi_stage_structure(self, cell_name: str, external_inputs: List[str],
                                         delay_type: str = "rise_transition",
                                         output_nodes: Optional[List[str]] = None,
@@ -717,7 +842,6 @@ class TSMCStageAwareExtractor:
 
         cell = self.parser.logic_cells[cell_name]
         self._trans_conn_cache = {}
-
         # Build equivalence map for parasitic node collapsing (VDD:1 -> VDD, etc.)
         self._build_equivalence_map(cell)
 
@@ -727,195 +851,68 @@ class TSMCStageAwareExtractor:
         power_nets = {'VDD', 'VSS'}
         external_nets = set(external_inputs)
 
-        # Determine initial MOS type based on delay_type
-        # Rise: final stage is PMOS (pull-up), Fall: final stage is NMOS (pull-down)
+        # Initial MOS type: rise → pull-up final stage PMOS; fall → pull-down NMOS.
         if 'rise' in delay_type:
-            final_mos_type = 'pmos'
-            final_power = 'VDD'
+            current_mos_type, current_power = 'pmos', 'VDD'
         else:
-            final_mos_type = 'nmos'
-            final_power = 'VSS'
+            current_mos_type, current_power = 'nmos', 'VSS'
 
-        stages_reversed = []  # Will build from output backwards, then reverse
+        stages_reversed = []  # built output-first; reversed at the end
         all_intermediate_nodes = []
-        visited_target_nodes = set()  # Track visited targets to prevent cycles
-        visited_transistors = set()   # Track transistors already assigned to a stage
-
+        visited_target_nodes = set()
+        visited_transistors = set()
         current_target_nodes = set(output_nodes)
-        current_mos_type = final_mos_type
-        current_power = final_power
-        stage_count = 0
 
         print(f"\n{'='*60}")
         print(f"Multi-Stage Analysis: {cell_name} ({delay_type})")
         print(f"{'='*60}")
 
-        while stage_count < max_stages:
-            stage_count += 1
-            print(f"\n--- Analyzing Stage {stage_count} (from output side) ---")
-            print(f"    MOS type: {current_mos_type}, Power: {current_power}")
-            print(f"    Target nodes: {current_target_nodes}")
-
-            # 1. Find transistors in path: power -> current_target_nodes
-            stage_transistors = self._find_stage_transistors(
-                cell, current_power, current_target_nodes, current_mos_type
+        # Backward traversal: build stages from output side toward inputs.
+        for stage_count in range(1, max_stages + 1):
+            result = self._try_build_one_stage(
+                cell, current_target_nodes, current_mos_type, current_power,
+                stage_count, visited_transistors, visited_target_nodes,
+                external_nets, power_nets,
             )
-
-            # Filter out transistors already used in previous stages
-            stage_transistors = stage_transistors - visited_transistors
-
-            if not stage_transistors:
-                print(f"    No new transistors found for this stage, stopping.")
+            if result is None:
                 break
-
-            print(f"    Found transistors: {stage_transistors}")
-            visited_transistors.update(stage_transistors)
-
-            # 2. Get paths for this stage
-            if current_mos_type == 'pmos':
-                paths_raw = self.trace_pmos_paths_tsmc(cell, current_power, current_target_nodes)
-            else:
-                paths_raw = self.trace_nmos_paths_tsmc(cell, current_power, current_target_nodes)
-
-            paths, transistor_list = self._paths_to_edges_tsmc(
-                paths_raw, f"Stage-{stage_count} {current_mos_type.upper()}"
-            )
-
-            # 3. Find gate nodes of transistors in this stage
-            # Use transistor_list from path extraction (more complete than stage_transistors)
-            gate_nodes = set()
-            transistor_set = set(transistor_list)
-            for trans in cell.transistors:
-                if trans.name in transistor_set:
-                    resolved_gate = self._resolve_node_connection(cell, trans.gate)
-                    if resolved_gate and resolved_gate not in power_nets:
-                        gate_nodes.add(resolved_gate)
-
-            gate_nodes_list = list(gate_nodes)
-            print(f"    Gate nodes: {gate_nodes_list}")
-
-            # 4. Check if all gates are external inputs (termination condition)
-            # Also filter out gates that were already visited as target nodes (cycle detection)
-            non_external_gates = [g for g in gate_nodes_list
-                                  if g not in external_nets and g not in visited_target_nodes]
-            all_gates_external = len(non_external_gates) == 0
-
-            print(f"    Non-external gates (new): {non_external_gates}")
-            print(f"    All gates external or already visited? {all_gates_external}")
-
-            # Store this stage
-            stage_data = StageData(
-                stage_num=0,  # Will be assigned after reversing
-                mos_type=current_mos_type,
-                power_node=current_power,
-                target_nodes=list(current_target_nodes),
-                paths=paths,
-                transistors=transistor_list,
-                gate_nodes=gate_nodes_list
-            )
+            stage_data, non_external_gates, all_gates_external = result
             stages_reversed.append(stage_data)
-
-            # Mark current targets as visited
             visited_target_nodes.update(current_target_nodes)
 
-            # 5. Termination check
             if all_gates_external:
                 print(f"    All gates are external inputs or already visited. Stage search complete!")
                 break
 
-            # 6. Prepare for next stage (go backwards)
-            # Non-external gates become the new target nodes
+            # Next stage: non-external gates become targets; alternate polarity.
             all_intermediate_nodes.extend(non_external_gates)
             current_target_nodes = set(non_external_gates)
+            current_mos_type, current_power = self._alternate_mos_polarity(current_mos_type)
 
-            # Alternate MOS type and power
-            if current_mos_type == 'pmos':
-                current_mos_type = 'nmos'
-                current_power = 'VSS'
-            else:
-                current_mos_type = 'pmos'
-                current_power = 'VDD'
-
-        # === Loop-closing pass (always-on) ===
-        # For sequential cells with cross-coupled storage, the main backward
-        # traversal terminates when all gates are external_or_visited.  The
-        # "visited" gates are precisely the storage nodes that close a feedback
-        # loop.  We add one additional pull-up + pull-down stage per such net so
-        # the resulting graph contains the latch feedback as an explicit cycle
-        # (instead of cutting it).  No-op for combinational cells.
-        all_visited_targets = set(visited_target_nodes)
-        for st in stages_reversed:
-            all_visited_targets.update(st.target_nodes)
-
-        loop_closing_nets = set()
-        for st in stages_reversed:
-            for g in st.gate_nodes:
-                if g not in external_nets and g in all_visited_targets:
-                    loop_closing_nets.add(g)
-
+        # Loop-closing pass: cross-coupled feedback nets get an explicit cycle stage pair.
+        loop_closing_nets = self._collect_loop_closing_nets(stages_reversed, external_nets)
         if loop_closing_nets:
             print(f"\n--- Loop-closing pass — closing {len(loop_closing_nets)} feedback net(s): "
                   f"{sorted(loop_closing_nets)} ---")
         used_trans = set()
         for st in stages_reversed:
             used_trans.update(st.transistors)
-
         for closing_net in sorted(loop_closing_nets):
-            for cm_type, cm_power in [('pmos', 'VDD'), ('nmos', 'VSS')]:
-                cand = self._find_stage_transistors(
-                    cell, cm_power, {closing_net}, cm_type)
-                cand = cand - used_trans
-                if not cand:
-                    continue
-                if cm_type == 'pmos':
-                    c_paths_raw = self.trace_pmos_paths_tsmc(
-                        cell, cm_power, {closing_net})
-                else:
-                    c_paths_raw = self.trace_nmos_paths_tsmc(
-                        cell, cm_power, {closing_net})
-                c_paths, c_trans_list = self._paths_to_edges_tsmc(
-                    c_paths_raw, f"LoopClose-{cm_type.upper()}->{closing_net}")
-                if not c_trans_list:
-                    continue
-                c_gates = set()
-                c_trans_set = set(c_trans_list)
-                for trans in cell.transistors:
-                    if trans.name in c_trans_set:
-                        resolved = self._resolve_node_connection(cell, trans.gate)
-                        if resolved and resolved not in power_nets:
-                            c_gates.add(resolved)
-                closing_stage = StageData(
-                    stage_num=0,
-                    mos_type=cm_type,
-                    power_node=cm_power,
-                    target_nodes=[closing_net],
-                    paths=c_paths,
-                    transistors=c_trans_list,
-                    gate_nodes=list(c_gates),
-                )
-                stages_reversed.append(closing_stage)
-                used_trans.update(c_trans_list)
-                print(f"    + closing-stage {cm_type.upper()} ({cm_power} -> {closing_net}): "
-                      f"transistors={c_trans_list}, gates={list(c_gates)}")
+            stages_reversed.extend(
+                self._build_closing_stages_for_net(cell, closing_net, used_trans, power_nets)
+            )
 
-        # Reverse stages so stage 1 is closest to input
+        # Number stages 1..N so stage 1 is closest to inputs.
         stages_reversed.reverse()
         for i, stage in enumerate(stages_reversed):
             stage.stage_num = i + 1
 
-        print(f"\n{'='*60}")
-        print(f"Result: {len(stages_reversed)} stages found")
-        for stage in stages_reversed:
-            print(f"  Stage {stage.stage_num}: {stage.mos_type.upper()} "
-                  f"({stage.power_node} -> {stage.target_nodes})")
-            print(f"    Transistors: {stage.transistors}")
-            print(f"    Gates: {stage.gate_nodes}")
-        print(f"{'='*60}\n")
+        self._print_multi_stage_summary(stages_reversed)
 
         return MultiStageInfo(
             num_stages=len(stages_reversed),
             stages=stages_reversed,
-            all_intermediate_nodes=list(set(all_intermediate_nodes))
+            all_intermediate_nodes=list(set(all_intermediate_nodes)),
         )
 
     def _find_stage_transistors(self, cell, power_node: str, target_nodes: set,
@@ -926,176 +923,141 @@ class TSMCStageAwareExtractor:
         """
         return self._find_stage2_transistors(cell, power_node, target_nodes, mos_type)
 
+    def _append_simple_stage2_path(self, result, start_net, trans_name, end_net, description):
+        """Append a two-edge `start_net -> trans -> end_net` path + description to result."""
+        result['paths'].append((start_net, trans_name))
+        result['paths'].append((trans_name, end_net))
+        result['descriptions'].append(description)
+
+    def _append_series_stage2_path(self, result, target_power, series_path, end_net, description):
+        """Append a series chain `target_power -> series_path[0..n-1] -> end_net` + description."""
+        for series_trans in series_path:
+            if series_trans not in result['transistors']:
+                result['transistors'].append(series_trans)
+        result['paths'].append((target_power, series_path[0]))
+        for i in range(len(series_path) - 1):
+            result['paths'].append((series_path[i], series_path[i + 1]))
+        result['paths'].append((series_path[-1], end_net))
+        result['descriptions'].append(description)
+
+    def _maybe_trace_series_or_fallback(self, result, cell, trans, trace_start_net, output_end_net,
+                                        target_power, target_mos_type, mos_label, intermediate_gate,
+                                        found_label='series to output', fallback_label='to output'):
+        """
+        Try to trace a series path from `trace_start_net` back to `target_power`.
+        On success emit a series stage-2 path; otherwise emit the direct fallback.
+        """
+        series_path = self._trace_to_power_tsmc(
+            cell, trans, trace_start_net, target_power, target_mos_type, [trans.name],
+        )
+        if series_path:
+            self._append_series_stage2_path(
+                result, target_power, series_path, output_end_net,
+                f"{mos_label} ({found_label}): {target_power} -> {' -> '.join(series_path)} "
+                f"-> {output_end_net} (controlled by {intermediate_gate})",
+            )
+        else:
+            self._append_simple_stage2_path(
+                result, trace_start_net, trans.name, output_end_net,
+                f"{mos_label} ({fallback_label}): {trace_start_net} -> {trans.name} "
+                f"-> {output_end_net} (controlled by {intermediate_gate})",
+            )
+
     def _analyze_stage2_pull_up_paths_tsmc(self, cell, intermediate_gate, direct_controlled,
                                             output_nodes: List[str], target_power: str):
-        """
-        Stage 2 pull-up path analysis: VDD -> output paths after intermediate gate
-        """
-        result = {
-            'transistors': [],
-            'paths': [],
-            'descriptions': []
-        }
+        """Stage 2 pull-up path analysis: VDD -> output paths through `intermediate_gate`."""
+        result = {'transistors': [], 'paths': [], 'descriptions': []}
+        target_mos_type = 'pmos'
+        label = 'Stage 2 PMOS'
 
-        target_mos_type = 'pmos'  # Pull-up uses PMOS
-
-        # 1. Transistors directly controlled by intermediate gate (PMOS for pull-up)
         for trans, conn in direct_controlled:
             result['transistors'].append(trans.name)
+            src, drn = conn['source'], conn['drain']
 
-            if conn['source'] == target_power:
-                # VDD -> transistor -> output/net
-                result['paths'].append((target_power, trans.name))
-                result['paths'].append((trans.name, conn['drain']))
-                result['descriptions'].append(
-                    f"Stage 2 PMOS (direct): {target_power} -> {trans.name} -> {conn['drain']} (controlled by {intermediate_gate})"
+            # Case A: a terminal sits directly on target_power → emit direct two-edge path.
+            if src == target_power:
+                self._append_simple_stage2_path(
+                    result, target_power, trans.name, drn,
+                    f"{label} (direct): {target_power} -> {trans.name} -> {drn} (controlled by {intermediate_gate})",
                 )
-            elif conn['drain'] == target_power:
-                # VDD -> transistor -> output/net
-                result['paths'].append((target_power, trans.name))
-                result['paths'].append((trans.name, conn['source']))
-                result['descriptions'].append(
-                    f"Stage 2 PMOS (direct): {target_power} -> {trans.name} -> {conn['source']} (controlled by {intermediate_gate})"
+                continue
+            if drn == target_power:
+                self._append_simple_stage2_path(
+                    result, target_power, trans.name, src,
+                    f"{label} (direct): {target_power} -> {trans.name} -> {src} (controlled by {intermediate_gate})",
                 )
-            elif conn['drain'] in output_nodes:
-                # intermediate_net -> transistor -> output
-                # Need to trace from VDD to this transistor's source
-                series_path = self._trace_to_power_tsmc(cell, trans, conn['source'], target_power,
-                                                         target_mos_type, [trans.name])
-                if series_path:
-                    # Add series transistors to result (series_path already includes trans.name)
-                    for series_trans in series_path:
-                        if series_trans not in result['transistors']:
-                            result['transistors'].append(series_trans)
-                    # Build path: VDD -> series transistors -> output
-                    # Note: series_path[-1] is already trans.name
-                    result['paths'].append((target_power, series_path[0]))
-                    for i in range(len(series_path) - 1):
-                        result['paths'].append((series_path[i], series_path[i+1]))
-                    result['paths'].append((series_path[-1], conn['drain']))
-                    result['descriptions'].append(
-                        f"Stage 2 PMOS (series to output): {target_power} -> {' -> '.join(series_path)} -> {conn['drain']} (controlled by {intermediate_gate})"
-                    )
-                else:
-                    # No series path found, just add direct connection
-                    result['paths'].append((conn['source'], trans.name))
-                    result['paths'].append((trans.name, conn['drain']))
-                    result['descriptions'].append(
-                        f"Stage 2 PMOS (to output): {conn['source']} -> {trans.name} -> {conn['drain']} (controlled by {intermediate_gate})"
-                    )
-            elif conn['source'] in output_nodes:
-                # intermediate_net -> transistor -> output
-                # Need to trace from VDD to this transistor's drain
-                series_path = self._trace_to_power_tsmc(cell, trans, conn['drain'], target_power,
-                                                         target_mos_type, [trans.name])
-                if series_path:
-                    # series_path already includes trans.name
-                    for series_trans in series_path:
-                        if series_trans not in result['transistors']:
-                            result['transistors'].append(series_trans)
-                    result['paths'].append((target_power, series_path[0]))
-                    for i in range(len(series_path) - 1):
-                        result['paths'].append((series_path[i], series_path[i+1]))
-                    result['paths'].append((series_path[-1], conn['source']))
-                    result['descriptions'].append(
-                        f"Stage 2 PMOS (series to output): {target_power} -> {' -> '.join(series_path)} -> {conn['source']} (controlled by {intermediate_gate})"
-                    )
-                else:
-                    result['paths'].append((conn['drain'], trans.name))
-                    result['paths'].append((trans.name, conn['source']))
-                    result['descriptions'].append(
-                        f"Stage 2 PMOS (to output): {conn['drain']} -> {trans.name} -> {conn['source']} (controlled by {intermediate_gate})"
-                    )
+                continue
+
+            # Case B: one end is an output → trace the OTHER end back to power; fall back to direct.
+            if drn in output_nodes:
+                self._maybe_trace_series_or_fallback(
+                    result, cell, trans, src, drn,
+                    target_power, target_mos_type, label, intermediate_gate,
+                )
+                continue
+            if src in output_nodes:
+                self._maybe_trace_series_or_fallback(
+                    result, cell, trans, drn, src,
+                    target_power, target_mos_type, label, intermediate_gate,
+                )
+                continue
+
+            # Case C (general): try both ends for a series path; fall back to a non-traced direct path.
+            source_path = self._trace_to_power_tsmc(cell, trans, src, target_power, target_mos_type, [trans.name])
+            drain_path = self._trace_to_power_tsmc(cell, trans, drn, target_power, target_mos_type, [trans.name])
+
+            if source_path:
+                self._append_series_stage2_path(
+                    result, target_power, source_path, drn,
+                    f"{label} (series): {target_power} -> {' -> '.join(source_path)} -> {drn} (controlled by {intermediate_gate})",
+                )
+            elif drain_path:
+                self._append_series_stage2_path(
+                    result, target_power, drain_path, src,
+                    f"{label} (series): {target_power} -> {' -> '.join(drain_path)} -> {src} (controlled by {intermediate_gate})",
+                )
             else:
-                # General case: try to trace to power from both ends
-                source_path = self._trace_to_power_tsmc(cell, trans, conn['source'], target_power,
-                                                          target_mos_type, [trans.name])
-                drain_path = self._trace_to_power_tsmc(cell, trans, conn['drain'], target_power,
-                                                         target_mos_type, [trans.name])
-
-                if source_path:
-                    # source_path already includes trans.name
-                    for series_trans in source_path:
-                        if series_trans not in result['transistors']:
-                            result['transistors'].append(series_trans)
-                    result['paths'].append((target_power, source_path[0]))
-                    for i in range(len(source_path) - 1):
-                        result['paths'].append((source_path[i], source_path[i+1]))
-                    result['paths'].append((source_path[-1], conn['drain']))
-                    result['descriptions'].append(
-                        f"Stage 2 PMOS (series): {target_power} -> {' -> '.join(source_path)} -> {conn['drain']} (controlled by {intermediate_gate})"
-                    )
-                elif drain_path:
-                    # drain_path already includes trans.name
-                    for series_trans in drain_path:
-                        if series_trans not in result['transistors']:
-                            result['transistors'].append(series_trans)
-                    result['paths'].append((target_power, drain_path[0]))
-                    for i in range(len(drain_path) - 1):
-                        result['paths'].append((drain_path[i], drain_path[i+1]))
-                    result['paths'].append((drain_path[-1], conn['source']))
-                    result['descriptions'].append(
-                        f"Stage 2 PMOS (series): {target_power} -> {' -> '.join(drain_path)} -> {conn['source']} (controlled by {intermediate_gate})"
-                    )
-                else:
-                    # Fallback: add both directions without power tracing
-                    result['paths'].append((conn['source'], trans.name))
-                    result['paths'].append((trans.name, conn['drain']))
-                    result['descriptions'].append(
-                        f"Stage 2 PMOS: {conn['source']} -> {trans.name} -> {conn['drain']} (controlled by {intermediate_gate})"
-                    )
+                self._append_simple_stage2_path(
+                    result, src, trans.name, drn,
+                    f"{label}: {src} -> {trans.name} -> {drn} (controlled by {intermediate_gate})",
+                )
 
         return result
 
     def _analyze_stage2_pull_down_paths_tsmc(self, cell, intermediate_gate, direct_controlled,
                                                output_nodes: List[str], target_power: str):
-        """
-        Stage 2 pull-down path analysis: VSS -> output paths after intermediate gate
-        """
-        result = {
-            'transistors': [],
-            'paths': [],
-            'descriptions': []
-        }
+        """Stage 2 pull-down path analysis: VSS -> output paths through `intermediate_gate`."""
+        result = {'transistors': [], 'paths': [], 'descriptions': []}
+        label = 'Stage 2 NMOS'
 
-        # 1. Transistors directly controlled by intermediate gate (NMOS for pull-down)
         for trans, conn in direct_controlled:
             result['transistors'].append(trans.name)
+            src, drn = conn['source'], conn['drain']
 
-            if conn['source'] == target_power:
-                # VSS -> transistor -> output/net
-                result['paths'].append((target_power, trans.name))
-                result['paths'].append((trans.name, conn['drain']))
-                result['descriptions'].append(
-                    f"Stage 2 NMOS (direct): {target_power} -> {trans.name} -> {conn['drain']} (controlled by {intermediate_gate})"
+            if src == target_power:
+                self._append_simple_stage2_path(
+                    result, target_power, trans.name, drn,
+                    f"{label} (direct): {target_power} -> {trans.name} -> {drn} (controlled by {intermediate_gate})",
                 )
-            elif conn['drain'] == target_power:
-                # VSS -> transistor -> output/net
-                result['paths'].append((target_power, trans.name))
-                result['paths'].append((trans.name, conn['source']))
-                result['descriptions'].append(
-                    f"Stage 2 NMOS (direct): {target_power} -> {trans.name} -> {conn['source']} (controlled by {intermediate_gate})"
+            elif drn == target_power:
+                self._append_simple_stage2_path(
+                    result, target_power, trans.name, src,
+                    f"{label} (direct): {target_power} -> {trans.name} -> {src} (controlled by {intermediate_gate})",
                 )
-            elif conn['drain'] in output_nodes:
-                # intermediate_net -> transistor -> output
-                result['paths'].append((conn['source'], trans.name))
-                result['paths'].append((trans.name, conn['drain']))
-                result['descriptions'].append(
-                    f"Stage 2 NMOS (to output): {conn['source']} -> {trans.name} -> {conn['drain']} (controlled by {intermediate_gate})"
+            elif drn in output_nodes:
+                self._append_simple_stage2_path(
+                    result, src, trans.name, drn,
+                    f"{label} (to output): {src} -> {trans.name} -> {drn} (controlled by {intermediate_gate})",
                 )
-            elif conn['source'] in output_nodes:
-                # intermediate_net -> transistor -> output
-                result['paths'].append((conn['drain'], trans.name))
-                result['paths'].append((trans.name, conn['source']))
-                result['descriptions'].append(
-                    f"Stage 2 NMOS (to output): {conn['drain']} -> {trans.name} -> {conn['source']} (controlled by {intermediate_gate})"
+            elif src in output_nodes:
+                self._append_simple_stage2_path(
+                    result, drn, trans.name, src,
+                    f"{label} (to output): {drn} -> {trans.name} -> {src} (controlled by {intermediate_gate})",
                 )
             else:
-                # General case: add both directions
-                result['paths'].append((conn['source'], trans.name))
-                result['paths'].append((trans.name, conn['drain']))
-                result['descriptions'].append(
-                    f"Stage 2 NMOS: {conn['source']} -> {trans.name} -> {conn['drain']} (controlled by {intermediate_gate})"
+                self._append_simple_stage2_path(
+                    result, src, trans.name, drn,
+                    f"{label}: {src} -> {trans.name} -> {drn} (controlled by {intermediate_gate})",
                 )
 
         return result

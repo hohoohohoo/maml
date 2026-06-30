@@ -309,6 +309,88 @@ class ASAP7StageAwareExtractor:
         dfs(power_node, set())
         return stage_trans
 
+    def _alternate_mos_polarity(self, current_mos_type):
+        """Toggle PMOS↔NMOS for the next backward stage; returns (mos_type, power_node)."""
+        return ('nmos', 'VSS') if current_mos_type == 'pmos' else ('pmos', 'VDD')
+
+    def _extract_stage_gate_nodes(self, cell, transistor_set, power_nets):
+        """Direct gate-net names for the given transistor set, excluding power nets."""
+        gate_nodes = set()
+        for trans in cell.transistors:
+            if trans.name not in transistor_set:
+                continue
+            gate = trans.gate
+            if gate and gate not in power_nets:
+                gate_nodes.add(gate)
+        return list(gate_nodes)
+
+    def _try_build_one_stage(self, cell, current_target_nodes, current_mos_type, current_power,
+                              stage_count, visited_transistors, visited_target_nodes,
+                              external_nets, power_nets):
+        """
+        Build one stage of the ASAP7 backward-traversal multi-stage analysis.
+
+        Returns (stage_data, non_external_gates, all_gates_external) on success, or
+        None when no new transistors are available (caller should stop the loop).
+        """
+        print(f"\n--- Analyzing Stage {stage_count} (from output side) ---")
+        print(f"    MOS type: {current_mos_type}, Power: {current_power}")
+        print(f"    Target nodes: {current_target_nodes}")
+
+        stage_transistors = self._find_stage_transistors(
+            cell, current_power, current_target_nodes, current_mos_type
+        ) - visited_transistors
+
+        if not stage_transistors:
+            print(f"    No new transistors found for this stage, stopping.")
+            return None
+
+        print(f"    Found transistors: {stage_transistors}")
+        visited_transistors.update(stage_transistors)
+
+        if current_mos_type == 'pmos':
+            paths_raw = self.trace_pmos_paths(cell, current_power, current_target_nodes)
+        else:
+            paths_raw = self.trace_nmos_paths(cell, current_power, current_target_nodes)
+        paths, transistor_list = self._paths_to_edges(
+            paths_raw, f"Stage-{stage_count} {current_mos_type.upper()}"
+        )
+
+        # ASAP7 uses the originally-found `stage_transistors` for gate detection
+        # (not transistor_list), so we keep that scope to preserve behavior.
+        gate_nodes_list = self._extract_stage_gate_nodes(cell, stage_transistors, power_nets)
+        print(f"    Gate nodes: {gate_nodes_list}")
+
+        non_external_gates = [
+            g for g in gate_nodes_list
+            if g not in external_nets and g not in visited_target_nodes
+        ]
+        all_gates_external = len(non_external_gates) == 0
+        print(f"    Non-external gates (new): {non_external_gates}")
+        print(f"    All gates external or already visited? {all_gates_external}")
+
+        stage_data = StageData(
+            stage_num=0,  # assigned after reversing
+            mos_type=current_mos_type,
+            power_node=current_power,
+            target_nodes=list(current_target_nodes),
+            paths=paths,
+            transistors=transistor_list,
+            gate_nodes=gate_nodes_list,
+        )
+        return stage_data, non_external_gates, all_gates_external
+
+    def _print_multi_stage_summary(self, stages_reversed):
+        """Final per-stage summary print after stage numbers are assigned."""
+        print(f"\n{'='*60}")
+        print(f"Result: {len(stages_reversed)} stages found")
+        for stage in stages_reversed:
+            print(f"  Stage {stage.stage_num}: {stage.mos_type.upper()} "
+                  f"({stage.power_node} -> {stage.target_nodes})")
+            print(f"    Transistors: {stage.transistors}")
+            print(f"    Gates: {stage.gate_nodes}")
+        print(f"{'='*60}\n")
+
     def extract_multi_stage_paths(self, cell, external_inputs: List[str],
                                    delay_type: str,
                                    output_nodes: Optional[List[str]] = None,
@@ -335,131 +417,54 @@ class ASAP7StageAwareExtractor:
         power_nets = {'VDD', 'VSS'}
         external_nets = set(external_inputs)
 
-        # Determine initial MOS type based on delay_type
-        # Rise: final stage is PMOS (pull-up), Fall: final stage is NMOS (pull-down)
+        # Initial MOS type: rise → final stage PMOS (pull-up); fall → NMOS (pull-down).
         if 'rise' in delay_type:
-            final_mos_type = 'pmos'
-            final_power = 'VDD'
+            current_mos_type, current_power = 'pmos', 'VDD'
         else:
-            final_mos_type = 'nmos'
-            final_power = 'VSS'
+            current_mos_type, current_power = 'nmos', 'VSS'
 
-        stages_reversed = []  # Build from output backwards, then reverse
+        stages_reversed = []  # built output-first; reversed at the end
         all_intermediate_nodes = []
-        visited_target_nodes = set()  # Track visited targets to prevent cycles
-        visited_transistors = set()   # Track transistors already assigned to a stage
-
+        visited_target_nodes = set()
+        visited_transistors = set()
         current_target_nodes = set(output_nodes)
-        current_mos_type = final_mos_type
-        current_power = final_power
-        stage_count = 0
 
         print(f"\n{'='*60}")
         print(f"Multi-Stage Analysis (ASAP7): {delay_type}")
         print(f"{'='*60}")
 
-        while stage_count < max_stages:
-            stage_count += 1
-            print(f"\n--- Analyzing Stage {stage_count} (from output side) ---")
-            print(f"    MOS type: {current_mos_type}, Power: {current_power}")
-            print(f"    Target nodes: {current_target_nodes}")
-
-            # 1. Find transistors in path: power -> current_target_nodes
-            stage_transistors = self._find_stage_transistors(
-                cell, current_power, current_target_nodes, current_mos_type
+        for stage_count in range(1, max_stages + 1):
+            result = self._try_build_one_stage(
+                cell, current_target_nodes, current_mos_type, current_power,
+                stage_count, visited_transistors, visited_target_nodes,
+                external_nets, power_nets,
             )
-
-            # Filter out transistors already used in previous stages
-            stage_transistors = stage_transistors - visited_transistors
-
-            if not stage_transistors:
-                print(f"    No new transistors found for this stage, stopping.")
+            if result is None:
                 break
-
-            print(f"    Found transistors: {stage_transistors}")
-            visited_transistors.update(stage_transistors)
-
-            # 2. Get paths for this stage
-            if current_mos_type == 'pmos':
-                paths_raw = self.trace_pmos_paths(cell, current_power, current_target_nodes)
-            else:
-                paths_raw = self.trace_nmos_paths(cell, current_power, current_target_nodes)
-
-            paths, transistor_list = self._paths_to_edges(
-                paths_raw, f"Stage-{stage_count} {current_mos_type.upper()}"
-            )
-
-            # 3. Find gate nodes of transistors in this stage
-            gate_nodes = set()
-            for trans in cell.transistors:
-                if trans.name in stage_transistors:
-                    gate = trans.gate
-                    if gate and gate not in power_nets:
-                        gate_nodes.add(gate)
-
-            gate_nodes_list = list(gate_nodes)
-            print(f"    Gate nodes: {gate_nodes_list}")
-
-            # 4. Check if all gates are external inputs (termination condition)
-            # Also filter out gates that were already visited as target nodes (cycle detection)
-            non_external_gates = [g for g in gate_nodes_list
-                                  if g not in external_nets and g not in visited_target_nodes]
-            all_gates_external = len(non_external_gates) == 0
-
-            print(f"    Non-external gates (new): {non_external_gates}")
-            print(f"    All gates external or already visited? {all_gates_external}")
-
-            # Store this stage
-            stage_data = StageData(
-                stage_num=0,  # Will be assigned after reversing
-                mos_type=current_mos_type,
-                power_node=current_power,
-                target_nodes=list(current_target_nodes),
-                paths=paths,
-                transistors=transistor_list,
-                gate_nodes=gate_nodes_list
-            )
+            stage_data, non_external_gates, all_gates_external = result
             stages_reversed.append(stage_data)
-
-            # Mark current targets as visited
             visited_target_nodes.update(current_target_nodes)
 
-            # 5. Termination check
             if all_gates_external:
                 print(f"    All gates are external inputs or already visited. Stage search complete!")
                 break
 
-            # 6. Prepare for next stage (go backwards)
-            # Non-external gates become the new target nodes
+            # Next stage: non-external gates become targets; alternate polarity.
             all_intermediate_nodes.extend(non_external_gates)
             current_target_nodes = set(non_external_gates)
+            current_mos_type, current_power = self._alternate_mos_polarity(current_mos_type)
 
-            # Alternate MOS type and power
-            if current_mos_type == 'pmos':
-                current_mos_type = 'nmos'
-                current_power = 'VSS'
-            else:
-                current_mos_type = 'pmos'
-                current_power = 'VDD'
-
-        # Reverse stages so stage 1 is closest to input
+        # Number stages 1..N so stage 1 is closest to inputs.
         stages_reversed.reverse()
         for i, stage in enumerate(stages_reversed):
             stage.stage_num = i + 1
 
-        print(f"\n{'='*60}")
-        print(f"Result: {len(stages_reversed)} stages found")
-        for stage in stages_reversed:
-            print(f"  Stage {stage.stage_num}: {stage.mos_type.upper()} "
-                  f"({stage.power_node} -> {stage.target_nodes})")
-            print(f"    Transistors: {stage.transistors}")
-            print(f"    Gates: {stage.gate_nodes}")
-        print(f"{'='*60}\n")
+        self._print_multi_stage_summary(stages_reversed)
 
         return MultiStageInfo(
             num_stages=len(stages_reversed),
             stages=stages_reversed,
-            all_intermediate_nodes=list(set(all_intermediate_nodes))
+            all_intermediate_nodes=list(set(all_intermediate_nodes)),
         )
 
     def create_multi_stage_edges(self, multi_stage_info: MultiStageInfo,
