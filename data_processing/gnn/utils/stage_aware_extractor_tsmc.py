@@ -1179,81 +1179,60 @@ class TSMCStageAwareExtractor:
         """
         edges = []
         edge_attrs = []
-
         node_to_idx = {node: idx for idx, node in enumerate(all_nodes)}
-
         print(f"   Creating stage-aware edges:")
 
-        def compress_paths(paths, stage_name):
-            """Convert paths with intermediate nets to direct transistor connections."""
-            compressed = set()  # Use set to avoid duplicates
-            net_connections = {}
-            direct_edges = set()  # Use set to avoid duplicates
-
-            for src, dst in paths:
-                src_in_nodes = src in node_to_idx
-                dst_in_nodes = dst in node_to_idx
-
-                if src_in_nodes and dst_in_nodes:
-                    direct_edges.add((src, dst))
-                elif src_in_nodes and not dst_in_nodes:
-                    if dst not in net_connections:
-                        net_connections[dst] = (set(), set())  # Use sets
-                    net_connections[dst][0].add(src)
-                elif not src_in_nodes and dst_in_nodes:
-                    if src not in net_connections:
-                        net_connections[src] = (set(), set())  # Use sets
-                    net_connections[src][1].add(dst)
-
-            compressed.update(direct_edges)
-
-            for net, (incoming, outgoing) in net_connections.items():
-                for src in incoming:
-                    for dst in outgoing:
-                        if (src, dst) not in compressed:
-                            compressed.add((src, dst))
-                            print(f"     {stage_name} (via {net}): {src} -> {dst}")
-
-            return list(compressed)
-
         if stage_info.stage_type == "one_stage":
-            compressed_paths = compress_paths(stage_info.stage1_paths, "One-stage")
-
-            for src, dst in compressed_paths:
-                if src in node_to_idx and dst in node_to_idx:
-                    src_idx = node_to_idx[src]
-                    dst_idx = node_to_idx[dst]
-                    edges.append([src_idx, dst_idx])
-                    edge_attrs.append([1.0, 0.0, 0.0])
-                    print(f"     One-stage: {src}[{src_idx}] -> {dst}[{dst_idx}] [1,0,0]")
-
+            stage_batches = [(stage_info.stage1_paths, [1.0, 0.0, 0.0], "One-stage", "[1,0,0]")]
         else:  # two_stage
-            # Stage 1 paths
-            compressed_stage1 = compress_paths(stage_info.stage1_paths, "Stage 1")
+            stage_batches = [
+                (stage_info.stage1_paths, [1.0, 0.0, 0.0], "Stage 1", "[1,0,0]"),
+                (stage_info.stage2_paths, [0.0, 1.0, 0.0], "Stage 2", "[0,1,0]"),
+            ]
 
-            for src, dst in compressed_stage1:
-                if src in node_to_idx and dst in node_to_idx:
-                    src_idx = node_to_idx[src]
-                    dst_idx = node_to_idx[dst]
-                    edges.append([src_idx, dst_idx])
-                    edge_attrs.append([1.0, 0.0, 0.0])
-                    print(f"     Stage 1: {src}[{src_idx}] -> {dst}[{dst_idx}] [1,0,0]")
+        for stage_paths, attr_template, stage_name, display_attr in stage_batches:
+            compressed = self._compress_paths_dedup(stage_paths, node_to_idx, stage_name)
+            for src, dst in compressed:
+                if src not in node_to_idx or dst not in node_to_idx:
+                    continue
+                src_idx, dst_idx = node_to_idx[src], node_to_idx[dst]
+                edges.append([src_idx, dst_idx])
+                edge_attrs.append(list(attr_template))
+                print(f"     {stage_name}: {src}[{src_idx}] -> {dst}[{dst_idx}] {display_attr}")
 
-            # Stage 2 paths
-            compressed_stage2 = compress_paths(stage_info.stage2_paths, "Stage 2")
-
-            for src, dst in compressed_stage2:
-                if src in node_to_idx and dst in node_to_idx:
-                    src_idx = node_to_idx[src]
-                    dst_idx = node_to_idx[dst]
-                    edges.append([src_idx, dst_idx])
-                    edge_attrs.append([0.0, 1.0, 0.0])
-                    print(f"     Stage 2: {src}[{src_idx}] -> {dst}[{dst_idx}] [0,1,0]")
-
-        print(f"     Total edges: {len(edges)} ({len([a for a in edge_attrs if a[0] == 1.0])} stage1, "
-              f"{len([a for a in edge_attrs if a[1] == 1.0])} stage2)")
-
+        stage1_count = sum(1 for a in edge_attrs if a[0] == 1.0)
+        stage2_count = sum(1 for a in edge_attrs if a[1] == 1.0)
+        print(f"     Total edges: {len(edges)} ({stage1_count} stage1, {stage2_count} stage2)")
         return edges, edge_attrs
+
+    def _compress_paths_dedup(self, paths, node_to_idx, stage_name):
+        """
+        Convert paths with intermediate (non-node_to_idx) nets to direct
+        transistor→transistor connections. Uses sets so duplicate edges collapse
+        across stage passes. TSMC variant.
+        """
+        net_connections = {}   # net -> (incoming set, outgoing set)
+        direct_edges = set()   # edges whose both endpoints are already in node_to_idx
+
+        for src, dst in paths:
+            src_in = src in node_to_idx
+            dst_in = dst in node_to_idx
+            if src_in and dst_in:
+                direct_edges.add((src, dst))
+            elif src_in and not dst_in:
+                net_connections.setdefault(dst, (set(), set()))[0].add(src)
+            elif not src_in and dst_in:
+                net_connections.setdefault(src, (set(), set()))[1].add(dst)
+
+        compressed = set(direct_edges)
+        for net, (incoming, outgoing) in net_connections.items():
+            for src in incoming:
+                for dst in outgoing:
+                    if (src, dst) in compressed:
+                        continue
+                    compressed.add((src, dst))
+                    print(f"     {stage_name} (via {net}): {src} -> {dst}")
+        return list(compressed)
 
     def create_multi_stage_edges(self, multi_stage_info: MultiStageInfo,
                                   all_nodes: List[str],
@@ -1277,72 +1256,33 @@ class TSMCStageAwareExtractor:
         """
         edges = []
         edge_attrs = []
-
         node_to_idx = {node: idx for idx, node in enumerate(all_nodes)}
+        num_stages = multi_stage_info.num_stages
+        print(f"   Creating multi-stage edges ({num_stages} stages):")
 
-        print(f"   Creating multi-stage edges ({multi_stage_info.num_stages} stages):")
-
-        def compress_paths(paths, stage_name):
-            """Convert paths with intermediate nets to direct transistor connections."""
-            compressed = set()  # Use set to avoid duplicates
-            net_connections = {}
-            direct_edges = set()  # Use set to avoid duplicates
-
-            for src, dst in paths:
-                src_in_nodes = src in node_to_idx
-                dst_in_nodes = dst in node_to_idx
-
-                if src_in_nodes and dst_in_nodes:
-                    direct_edges.add((src, dst))
-                elif src_in_nodes and not dst_in_nodes:
-                    if dst not in net_connections:
-                        net_connections[dst] = (set(), set())  # Use sets
-                    net_connections[dst][0].add(src)
-                elif not src_in_nodes and dst_in_nodes:
-                    if src not in net_connections:
-                        net_connections[src] = (set(), set())  # Use sets
-                    net_connections[src][1].add(dst)
-
-            compressed.update(direct_edges)
-
-            for net, (incoming, outgoing) in net_connections.items():
-                for src in incoming:
-                    for dst in outgoing:
-                        if (src, dst) not in compressed:
-                            compressed.add((src, dst))
-                            print(f"     {stage_name} (via {net}): {src} -> {dst}")
-
-            return list(compressed)
-
-        # Process each stage
         stage_edge_counts = []
         for stage in multi_stage_info.stages:
             stage_name = f"Stage {stage.stage_num} ({stage.mos_type.upper()})"
-            compressed_paths = compress_paths(stage.paths, stage_name)
+            compressed = self._compress_paths_dedup(stage.paths, node_to_idx, stage_name)
 
             stage_edge_count = 0
-            for src, dst in compressed_paths:
-                if src in node_to_idx and dst in node_to_idx:
-                    src_idx = node_to_idx[src]
-                    dst_idx = node_to_idx[dst]
-                    edges.append([src_idx, dst_idx])
-
-                    # Create one-hot edge attribute for this stage
-                    attr = [0.0] * max_attr_dim
-                    stage_idx = stage.stage_num - 1  # 0-indexed
-                    if stage_idx < max_attr_dim:
-                        attr[stage_idx] = 1.0
-                    edge_attrs.append(attr)
-
-                    print(f"     {stage_name}: {src}[{src_idx}] -> {dst}[{dst_idx}] {attr[:multi_stage_info.num_stages]}")
-                    stage_edge_count += 1
-
+            for src, dst in compressed:
+                if src not in node_to_idx or dst not in node_to_idx:
+                    continue
+                src_idx, dst_idx = node_to_idx[src], node_to_idx[dst]
+                edges.append([src_idx, dst_idx])
+                # One-hot edge attribute for this stage.
+                attr = [0.0] * max_attr_dim
+                stage_idx = stage.stage_num - 1
+                if stage_idx < max_attr_dim:
+                    attr[stage_idx] = 1.0
+                edge_attrs.append(attr)
+                print(f"     {stage_name}: {src}[{src_idx}] -> {dst}[{dst_idx}] {attr[:num_stages]}")
+                stage_edge_count += 1
             stage_edge_counts.append(stage_edge_count)
 
-        # Print summary
-        summary = ", ".join([f"stage{i+1}={count}" for i, count in enumerate(stage_edge_counts)])
+        summary = ", ".join(f"stage{i+1}={c}" for i, c in enumerate(stage_edge_counts))
         print(f"     Total edges: {len(edges)} ({summary})")
-
         return edges, edge_attrs
 
 
