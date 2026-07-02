@@ -593,7 +593,10 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
     return results
 
 
-def main():
+# ---------------- main() helpers ----------------
+
+def _build_argparser():
+    """CLI parser for ASAP7 GCN Topology Validation."""
     parser = argparse.ArgumentParser(
         description='ASAP7 GCN Topology Validation',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -602,7 +605,7 @@ Examples:
   python ASAP7_GCN_topology_validation.py --experiment intra_topology --model_type maml --gpu 0
   python ASAP7_GCN_topology_validation.py --experiment topology_agnostic --model_type maml --gpu 1
   python ASAP7_GCN_topology_validation.py --experiment intra_topology --model_type maml --mode interpolation
-        """
+        """,
     )
 
     # Required arguments
@@ -719,22 +722,47 @@ Examples:
                         help='Filter test tasks to only use continuous data (adds _filtered suffix to output)')
     parser.add_argument('--continuity_threshold', type=float, default=0.18,
                         help='Threshold ratio for continuity check (default: 0.18)')
+    return parser
 
-    args = parser.parse_args()
 
-    # Setup device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using GPU: {args.gpu}")
-    print(f"Device: {device}")
-
-    # Get cell list based on experiment type
+def _resolve_cell_list(args):
+    """Pick the cell list from --cells, experiment default, or intra/agnostic constant."""
     if args.cells is not None:
-        cell_list = args.cells
-    elif args.experiment == 'intra_topology':
-        cell_list = INTRA_TOPOLOGY_CELLS
-    else:
-        cell_list = TOPOLOGY_AGNOSTIC_CELLS
+        return args.cells
+    if args.experiment == 'intra_topology':
+        return INTRA_TOPOLOGY_CELLS
+    return TOPOLOGY_AGNOSTIC_CELLS
 
+
+def _build_all_suffixes(args):
+    """
+    Build the collection of path suffixes that toggle features on/off.
+    Returns dict with keys: topology, voltage, norm, temp, slew.
+    """
+    return {
+        'topology': "_inputport" if args.inputport else "",
+        'voltage': ("_vdd_only" if args.voltage_mode == "vdd_only"
+                    else "_vdd_mos" if args.voltage_mode == "vdd_mos"
+                    else ""),
+        'norm': "_minmax" if args.normalization == "minmax" else "",
+        'temp': "_tempall" if args.temp_mode == "temp_all" else "",
+        'slew': "_relpin" if args.related_pin_only else "",
+    }
+
+
+def _build_checkpoint_suffix(args, topology_suffix):
+    """Detect cache-derived suffixes (_gatectrl, _bidir, _directmos) and append topology_suffix."""
+    suffix = ""
+    if args.cache_path:
+        cache_basename = os.path.basename(args.cache_path)
+        for tag in ("_gatectrl", "_bidir", "_directmos"):
+            if tag in cache_basename:
+                suffix += tag
+    return suffix + topology_suffix
+
+
+def _print_config_banner(args, cell_list):
+    """Config banner printed at the top of main()."""
     print(f"\n{'='*80}")
     print(f"ASAP7 GCN Topology Validation")
     print(f"{'='*80}")
@@ -763,151 +791,260 @@ Examples:
     print(f"Cells: {len(cell_list)} cells")
     print(f"{'='*80}")
 
-    # Build suffixes based on configuration
-    topology_suffix = "_inputport" if args.inputport else ""
-    voltage_suffix = "_vdd_only" if args.voltage_mode == "vdd_only" else ("_vdd_mos" if args.voltage_mode == "vdd_mos" else "")
-    norm_suffix = "_minmax" if args.normalization == "minmax" else ""
-    temp_suffix = "_tempall" if args.temp_mode == "temp_all" else ""
-    slew_suffix = "_relpin" if args.related_pin_only else ""
 
-    # Build checkpoint suffix from cache filename if provided
-    # Supported: _gatectrl, _bidir, _directmos (only affect adjacency matrix, not node features)
-    checkpoint_suffix = ""
-    if args.cache_path:
-        cache_basename = os.path.basename(args.cache_path)
-        if "_gatectrl" in cache_basename:
-            checkpoint_suffix += "_gatectrl"
-        if "_bidir" in cache_basename:
-            checkpoint_suffix += "_bidir"
-        if "_directmos" in cache_basename:
-            checkpoint_suffix += "_directmos"
-    checkpoint_suffix += topology_suffix
+def _load_train_data_and_norm_stats(args, suffixes):
+    """
+    Locate the train dataset (falling back to legacy paths), load with mmap.
 
-    # Load train data to get norm_stats
-    # ASAP7 dataset naming: train_{data_type}_{graph_mode}{topology_suffix}{slew_suffix}{sample_suffix}.pth
+    Returns (norm_stats, cache_path_from_data) on success; (None, None) if no
+    candidate path exists.
+    """
     sample_suffix = args.sample_suffix
-    train_path = os.path.join(args.dataset_dir, f"train_{args.data_type}_{args.graph_mode}{topology_suffix}{slew_suffix}{sample_suffix}.pth")
+    top = suffixes['topology']
+    slew = suffixes['slew']
+    train_path = os.path.join(
+        args.dataset_dir,
+        f"train_{args.data_type}_{args.graph_mode}{top}{slew}{sample_suffix}.pth",
+    )
     print(f"\nLoading train data for norm_stats: {train_path}", flush=True)
-
     if not os.path.exists(train_path):
         # Try without slew_suffix
-        train_path_no_slew = os.path.join(args.dataset_dir, f"train_{args.data_type}_{args.graph_mode}{topology_suffix}{sample_suffix}.pth")
-        if os.path.exists(train_path_no_slew):
-            print(f"Using train path without slew suffix: {train_path_no_slew}", flush=True)
-            train_path = train_path_no_slew
+        alt = os.path.join(
+            args.dataset_dir,
+            f"train_{args.data_type}_{args.graph_mode}{top}{sample_suffix}.pth",
+        )
+        if os.path.exists(alt):
+            print(f"Using train path without slew suffix: {alt}", flush=True)
+            train_path = alt
         else:
-            # Try legacy path without topology suffix
-            train_path_legacy = os.path.join(args.dataset_dir, f"train_{args.data_type}_{args.graph_mode}{sample_suffix}.pth")
-            if os.path.exists(train_path_legacy):
-                print(f"Using legacy train path: {train_path_legacy}", flush=True)
-                train_path = train_path_legacy
+            # Legacy path without topology suffix
+            legacy = os.path.join(
+                args.dataset_dir,
+                f"train_{args.data_type}_{args.graph_mode}{sample_suffix}.pth",
+            )
+            if os.path.exists(legacy):
+                print(f"Using legacy train path: {legacy}", flush=True)
+                train_path = legacy
             else:
                 print(f"Train data not found: {train_path}")
-                return 1
+                return None, None
 
     print("Loading train_data with mmap...", flush=True)
     train_data = torch.load(train_path, weights_only=False, map_location='cpu', mmap=True)
     print("train_data loaded.", flush=True)
     norm_stats = train_data.get('norm_stats', None)
     cache_path_from_data = train_data.get('cache_path', None)
-
     print(f"Norm stats loaded: {norm_stats is not None}")
+    return norm_stats, cache_path_from_data
 
-    # Use cache_path from argument if provided, otherwise from train_data
+
+def _load_topology_cache(args, cache_path_from_data):
+    """
+    Resolve topology cache path (prefer CLI, else train_data-embedded),
+    remap /mnt/home/ → /home/, load with mmap.  Returns None if not found.
+    """
     cache_path = args.cache_path if args.cache_path else cache_path_from_data
-
-    # Load topology cache
     if cache_path:
         if cache_path.startswith('/mnt/home/'):
             cache_path = cache_path.replace('/mnt/home/', '/home/')
         if not os.path.exists(cache_path):
             cache_filename = os.path.basename(cache_path)
-            cache_path = f"/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/{cache_filename}"
-
-    if cache_path and os.path.exists(cache_path):
-        print(f"Loading topology cache: {cache_path}", flush=True)
-        topology_cache = torch.load(cache_path, weights_only=False, map_location='cpu', mmap=True)
-        print(f"Loaded topology cache for {len(topology_cache)} cells", flush=True)
-    else:
+            cache_path = (
+                f"/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/"
+                f"gnn/topology_cache/{cache_filename}"
+            )
+    if not (cache_path and os.path.exists(cache_path)):
         print(f"Topology cache not found: {cache_path}")
-        return 1
+        return None
+    print(f"Loading topology cache: {cache_path}", flush=True)
+    topology_cache = torch.load(cache_path, weights_only=False, map_location='cpu', mmap=True)
+    print(f"Loaded topology cache for {len(topology_cache)} cells", flush=True)
+    return topology_cache
 
-    # Load model
-    print(f"\nLoading {args.model_type.upper()} model...")
 
-    if args.model_path is None:
-        # Add pooling suffix only if not 'mean' (default)
-        pool_suffix = f"_pool{args.pooling}" if args.pooling != 'mean' else ""
-        arch_suffix = f"_conv{args.conv_hidden_dim}x{args.num_conv_layers}_fc{args.fc_hidden_dim}x{args.num_fc_layers}{pool_suffix}"
-
-        if args.model_type == 'baseline':
-            model_dir = f"../../../pretrained_models/gnn_baseline_asap7_process_checkpoints{checkpoint_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}{sample_suffix}"
-            model_filename = f"gnn_baseline_asap7_process_{args.data_type}_{args.graph_mode}_iter{args.num_iterations}{arch_suffix}.pth"
-        else:
-            model_dir = f"../../../pretrained_models/gnn_maml_asap7_process_checkpoints{checkpoint_suffix}{voltage_suffix}{norm_suffix}{temp_suffix}{slew_suffix}{sample_suffix}"
-            model_filename = f"gnn_maml_asap7_process_{args.data_type}_{args.graph_mode}_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}.pth"
-
-        model_path = os.path.join(model_dir, model_filename)
+def _resolve_model_path(args, suffixes, checkpoint_suffix):
+    """
+    Build the default MAML/baseline model checkpoint path from CLI args + suffixes,
+    or return args.model_path when the user supplied a custom path.
+    """
+    if args.model_path is not None:
+        return args.model_path
+    pool_suffix = f"_pool{args.pooling}" if args.pooling != 'mean' else ""
+    arch_suffix = (f"_conv{args.conv_hidden_dim}x{args.num_conv_layers}"
+                   f"_fc{args.fc_hidden_dim}x{args.num_fc_layers}{pool_suffix}")
+    sample_suffix = args.sample_suffix
+    volt = suffixes['voltage']
+    norm = suffixes['norm']
+    temp = suffixes['temp']
+    slew = suffixes['slew']
+    if args.model_type == 'baseline':
+        model_dir = (f"../../../pretrained_models/gnn_baseline_asap7_process_checkpoints"
+                     f"{checkpoint_suffix}{volt}{norm}{temp}{slew}{sample_suffix}")
+        model_filename = (f"gnn_baseline_asap7_process_{args.data_type}_{args.graph_mode}"
+                          f"_iter{args.num_iterations}{arch_suffix}.pth")
     else:
-        model_path = args.model_path
+        model_dir = (f"../../../pretrained_models/gnn_maml_asap7_process_checkpoints"
+                     f"{checkpoint_suffix}{volt}{norm}{temp}{slew}{sample_suffix}")
+        model_filename = (f"gnn_maml_asap7_process_{args.data_type}_{args.graph_mode}"
+                          f"_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}"
+                          f"_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}.pth")
+    return os.path.join(model_dir, model_filename)
 
-    # Anchor relative model_path to this script's directory so external
-    # sweep runners that change cwd don't break the default lookup.
+
+def _load_gnn_model_from_checkpoint(model_path, args, device):
+    """
+    Load a GNN checkpoint from model_path (anchored to script dir if relative),
+    construct a matching model, load state.
+
+    Returns (model, arch_kwargs, ckpt_norm_stats) on success; (None, None, None)
+    if the checkpoint file is missing.
+    """
     if not os.path.isabs(model_path):
+        # Anchor relative paths to this script's directory so external sweep
+        # runners that change cwd don't break the default lookup.
         model_path = os.path.normpath(os.path.join(
             os.path.dirname(os.path.abspath(__file__)), model_path))
-
     if not os.path.exists(model_path):
         print(f"Model not found: {model_path}")
         print("Please provide --model_path or ensure the model exists")
-        return 1
+        return None, None, None
 
-    # Load checkpoint
     checkpoint = torch.load(model_path, weights_only=False, map_location=device)
-
-    # Use norm_stats from checkpoint if available
-    checkpoint_norm_stats = checkpoint.get('norm_stats', None)
-    if checkpoint_norm_stats is not None:
-        norm_stats = checkpoint_norm_stats
+    ckpt_norm_stats = checkpoint.get('norm_stats', None)
+    if ckpt_norm_stats is not None:
         print("Using norm_stats from checkpoint")
 
-    # Get architecture params from checkpoint
     config = checkpoint.get('config', {})
-    conv_hidden_dim = config.get('conv_hidden_dim', args.conv_hidden_dim)
-    num_conv_layers = config.get('num_conv_layers', args.num_conv_layers)
-    fc_hidden_dim = config.get('fc_hidden_dim', args.fc_hidden_dim)
-    num_fc_layers = config.get('num_fc_layers', args.num_fc_layers)
-    node_features = config.get('node_features', 11)  # ASAP7 Process: 11D
+    arch_kwargs = dict(
+        conv_hidden_dim=config.get('conv_hidden_dim', args.conv_hidden_dim),
+        num_conv_layers=config.get('num_conv_layers', args.num_conv_layers),
+        fc_hidden_dim=config.get('fc_hidden_dim', args.fc_hidden_dim),
+        num_fc_layers=config.get('num_fc_layers', args.num_fc_layers),
+        node_features=config.get('node_features', 11),  # ASAP7 Process: 11D
+        pooling=config.get('pooling', args.pooling),
+    )
+    print(f"Detected node_features from checkpoint: {arch_kwargs['node_features']}")
+    print(f"Pooling mode: {arch_kwargs['pooling']}")
 
-    print(f"Detected node_features from checkpoint: {node_features}")
-
-    # Get pooling from checkpoint config or use argument
-    pooling_mode = config.get('pooling', args.pooling)
-    print(f"Pooling mode: {pooling_mode}")
-
-    # Create model
     model = create_maml_gcn_model(
-        node_features=node_features,
-        pooling=pooling_mode,
+        node_features=arch_kwargs['node_features'],
+        pooling=arch_kwargs['pooling'],
         output_dim=1,
         dropout=0.0,
-        conv_hidden_dim=conv_hidden_dim,
-        num_conv_layers=num_conv_layers,
-        fc_hidden_dim=fc_hidden_dim,
-        num_fc_layers=num_fc_layers
+        conv_hidden_dim=arch_kwargs['conv_hidden_dim'],
+        num_conv_layers=arch_kwargs['num_conv_layers'],
+        fc_hidden_dim=arch_kwargs['fc_hidden_dim'],
+        num_fc_layers=arch_kwargs['num_fc_layers'],
     )
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     model = model.to(device)
-
     print(f"Loaded model: {model_path}")
-    print(f"Architecture: conv={conv_hidden_dim}x{num_conv_layers}, fc={fc_hidden_dim}x{num_fc_layers}, pooling={pooling_mode}")
+    print(f"Architecture: conv={arch_kwargs['conv_hidden_dim']}x{arch_kwargs['num_conv_layers']}, "
+          f"fc={arch_kwargs['fc_hidden_dim']}x{arch_kwargs['num_fc_layers']}, "
+          f"pooling={arch_kwargs['pooling']}")
+    return model, arch_kwargs, ckpt_norm_stats
 
-    # Process each cell
+
+def _print_summary(args, cell_list, all_results, successful, failed):
+    """Per-cell summary table + averages."""
+    print(f"\n{'='*80}")
+    print(f"SUMMARY: {args.experiment}")
+    print(f"{'='*80}")
+    print(f"Successful: {successful}/{len(cell_list)}, Failed: {failed}/{len(cell_list)}")
+    print()
+    if not all_results:
+        return
+    print(f"{'Cell':<25} {'Tasks':<8} {'NRMSE%':<10} {'MAPE%':<10} {'RMSE(ns)':<12}")
+    print("-" * 70)
+    for result in all_results:
+        print(f"{result['cell_name']:<25} {result['num_valid_tasks']:<8} "
+              f"{result['nrmse_total']:<10.2f} {result['mape_total']:<10.2f} "
+              f"{result['rmse_total']*1e9:<12.4f}")
+    avg_nrmse = sum(r['nrmse_total'] for r in all_results) / len(all_results)
+    avg_mape = sum(r['mape_total'] for r in all_results) / len(all_results)
+    avg_rmse = sum(r['rmse_total'] for r in all_results) / len(all_results)
+    total_tasks = sum(r['num_valid_tasks'] for r in all_results)
+    print("-" * 70)
+    print(f"{'AVERAGE':<25} {total_tasks:<8} {avg_nrmse:<10.2f} {avg_mape:<10.2f} {avg_rmse*1e9:<12.4f}")
+
+
+def _save_results_npy(args, all_results, arch_kwargs):
+    """Save per-cell prediction/actual .npy files with sweep-encoded filenames."""
+    pooling_mode = arch_kwargs['pooling']
+    pool_suffix = f"_pool{pooling_mode}" if pooling_mode != 'mean' else ""
+    arch_suffix = (f"_conv{arch_kwargs['conv_hidden_dim']}x{arch_kwargs['num_conv_layers']}"
+                   f"_fc{arch_kwargs['fc_hidden_dim']}x{arch_kwargs['num_fc_layers']}{pool_suffix}")
+    filter_suffix = "_filtered" if args.filter_continuous else ""
+
+    voltage_suffix = ""
+    if args.voltage_mode == 'vdd_only':
+        voltage_suffix = "_vddonly"
+    elif args.voltage_mode == 'vdd_mos':
+        voltage_suffix = "_vddmos"
+    relpin_suffix = "_relpin" if args.related_pin_only else ""
+    asym_suffix = f"_asymA{args.asym_alpha:g}" if args.asym_alpha is not None else ""
+    safe_suffix = f"_safeE{args.safe_eps:g}" if args.safe_eps is not None else ""
+    pin_suffix  = f"_pinT{args.pinball_tau:g}" if args.pinball_tau is not None else ""
+
+    output_dir_name = (
+        "data_result_npy_directory_final" if args.output_dir == "final"
+        else "data_result_npy_directory"
+    )
+    os.makedirs(output_dir_name, exist_ok=True)
+
+    common_tail = (f"{arch_suffix}{filter_suffix}{voltage_suffix}{relpin_suffix}"
+                   f"{asym_suffix}{pin_suffix}{safe_suffix}")
+
+    for result in all_results:
+        cell_name = result['cell_name']
+        base_head = (f"{args.output_prefix}_{args.experiment}_{cell_name}"
+                     f"_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}")
+        if args.model_type == 'baseline':
+            base_name = f"{base_head}_iter{args.num_iterations}{common_tail}"
+        else:
+            base_name = (f"{base_head}_innerdiv{args.innerdiv}"
+                         f"_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}"
+                         f"_inner{args.inner_steps}{common_tail}")
+        np.save(f"{output_dir_name}/{base_name}_pred.npy", result['predictions'])
+        np.save(f"{output_dir_name}/{base_name}_act.npy", result['actuals'])
+
+    print(f"\nSaved results to {output_dir_name}/")
+
+
+def main():
+    args = _build_argparser().parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using GPU: {args.gpu}")
+    print(f"Device: {device}")
+
+    cell_list = _resolve_cell_list(args)
+    _print_config_banner(args, cell_list)
+
+    suffixes = _build_all_suffixes(args)
+    checkpoint_suffix = _build_checkpoint_suffix(args, suffixes['topology'])
+
+    # Load train data → norm_stats + optional embedded cache_path.
+    norm_stats, cache_path_from_data = _load_train_data_and_norm_stats(args, suffixes)
+    if norm_stats is None and cache_path_from_data is None:
+        return 1
+
+    topology_cache = _load_topology_cache(args, cache_path_from_data)
+    if topology_cache is None:
+        return 1
+
+    print(f"\nLoading {args.model_type.upper()} model...")
+    model_path = _resolve_model_path(args, suffixes, checkpoint_suffix)
+    model, arch_kwargs, ckpt_norm_stats = _load_gnn_model_from_checkpoint(model_path, args, device)
+    if model is None:
+        return 1
+    if ckpt_norm_stats is not None:
+        norm_stats = ckpt_norm_stats
+
+    # Per-cell validation.
     all_results = []
-    successful = 0
-    failed = 0
-
+    successful = failed = 0
     for cell_name in cell_list:
         result = run_cell_validation(args, cell_name, topology_cache, norm_stats, model, device)
         if result is not None:
@@ -916,74 +1053,10 @@ Examples:
         else:
             failed += 1
 
-    # Print summary
-    print(f"\n{'='*80}")
-    print(f"SUMMARY: {args.experiment}")
-    print(f"{'='*80}")
-    print(f"Successful: {successful}/{len(cell_list)}, Failed: {failed}/{len(cell_list)}")
-    print()
+    _print_summary(args, cell_list, all_results, successful, failed)
 
-    if all_results:
-        print(f"{'Cell':<25} {'Tasks':<8} {'NRMSE%':<10} {'MAPE%':<10} {'RMSE(ns)':<12}")
-        print("-" * 70)
-
-        for result in all_results:
-            print(f"{result['cell_name']:<25} {result['num_valid_tasks']:<8} "
-                  f"{result['nrmse_total']:<10.2f} {result['mape_total']:<10.2f} "
-                  f"{result['rmse_total']*1e9:<12.4f}")
-
-        # Calculate averages
-        avg_nrmse = sum(r['nrmse_total'] for r in all_results) / len(all_results)
-        avg_mape = sum(r['mape_total'] for r in all_results) / len(all_results)
-        avg_rmse = sum(r['rmse_total'] for r in all_results) / len(all_results)
-        total_tasks = sum(r['num_valid_tasks'] for r in all_results)
-
-        print("-" * 70)
-        print(f"{'AVERAGE':<25} {total_tasks:<8} {avg_nrmse:<10.2f} {avg_mape:<10.2f} {avg_rmse*1e9:<12.4f}")
-
-    # Save results if requested
     if args.save_results and all_results:
-        pool_suffix = f"_pool{pooling_mode}" if pooling_mode != 'mean' else ""
-        arch_suffix = f"_conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}{pool_suffix}"
-        filter_suffix = "_filtered" if args.filter_continuous else ""
-
-        # Add voltage_mode suffix (vdd_only -> _vddonly, vdd_mos -> _vddmos, all_nodes -> no suffix)
-        voltage_suffix = ""
-        if args.voltage_mode == 'vdd_only':
-            voltage_suffix = "_vddonly"
-        elif args.voltage_mode == 'vdd_mos':
-            voltage_suffix = "_vddmos"
-
-        # Add related_pin_only suffix
-        relpin_suffix = "_relpin" if args.related_pin_only else ""
-
-        # Asymmetric-MSE inner-loop suffix (only when override is active)
-        asym_suffix = f"_asymA{args.asym_alpha:g}" if args.asym_alpha is not None else ""
-        # Safe-margin move-shift suffix
-        safe_suffix = f"_safeE{args.safe_eps:g}" if args.safe_eps is not None else ""
-        # Pinball / quantile-loss suffix
-        pin_suffix  = f"_pinT{args.pinball_tau:g}" if args.pinball_tau is not None else ""
-
-        # Determine output directory based on output_dir argument
-        output_dir_name = "data_result_npy_directory_final" if args.output_dir == "final" else "data_result_npy_directory"
-
-        for result in all_results:
-            cell_name = result['cell_name']
-
-            if args.model_type == 'baseline':
-                base_name = f"{args.output_prefix}_{args.experiment}_{cell_name}_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}_iter{args.num_iterations}{arch_suffix}{filter_suffix}{voltage_suffix}{relpin_suffix}{asym_suffix}{pin_suffix}{safe_suffix}"
-            else:
-                base_name = f"{args.output_prefix}_{args.experiment}_{cell_name}_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}{filter_suffix}{voltage_suffix}{relpin_suffix}{asym_suffix}{pin_suffix}{safe_suffix}"
-
-            pred_filename = f"{output_dir_name}/{base_name}_pred.npy"
-            act_filename = f"{output_dir_name}/{base_name}_act.npy"
-
-            os.makedirs(output_dir_name, exist_ok=True)
-
-            np.save(pred_filename, result['predictions'])
-            np.save(act_filename, result['actuals'])
-
-        print(f"\nSaved results to {output_dir_name}/")
+        _save_results_npy(args, all_results, arch_kwargs)
 
     return 0 if failed == 0 else 1
 
