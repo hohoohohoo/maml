@@ -193,7 +193,8 @@ def evaluate_single_task(model, test_data_input, test_data_output, randomtask,
     return None
 
 
-def main():
+def _build_argparser():
+    """Build the argparse parser with all arguments."""
     parser = argparse.ArgumentParser(
         description='MAML Multi-Model Comparison (Compare up to 5 models)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -269,9 +270,11 @@ Examples:
                         choices=['selective_adam', 'adam'],
                         help='Adaptation method: selective_adam (grad/move + conditional Adam) or adam (direct Adam, no grad/move) (default: selective_adam)')
 
-    args = parser.parse_args()
+    return parser
 
-    # Validate parameter counts
+
+def _validate_vary_counts(args, parser):
+    """Validate that --vary parameter has 2-5 values and others are single-valued."""
     varying_param = args.vary
     if varying_param == 'innerdiv':
         if len(args.innerdiv) < 2 or len(args.innerdiv) > 5:
@@ -294,15 +297,9 @@ Examples:
         if len(args.innerdiv) != 1 or len(args.meta) != 1 or len(args.num_iterations) != 1:
             parser.error("When varying layer_length, innerdiv, meta, and num_iterations must be single values")
 
-    # Get configuration
-    try:
-        config = get_test_config(args.config)
-    except ValueError as e:
-        print(f"Error: {e}")
-        print_available_configs()
-        return 1
 
-    # Set defaults from config
+def _resolve_config_defaults(args, config):
+    """Fill args defaults from the loaded test config."""
     if args.cells is None:
         args.cells = config['default_cells']
     if args.data_type is None:
@@ -316,6 +313,9 @@ Examples:
     if args.compare_with_mlp and args.mlp_iterations is None:
         args.mlp_iterations = 300000
 
+
+def _setup_indices_and_bounds(args):
+    """Populate mode-dependent default indices and derive k/left/right bounds."""
     # Set mode-dependent default indices
     if args.indices is None:
         if args.mode == 'extrapolation':
@@ -337,14 +337,9 @@ Examples:
     args.left_bound = min(args.indices)
     args.right_bound = max(args.indices) + 1
 
-    # GPU settings
-    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print('Device:', device)
-
-    # Generate model combinations based on varying parameter
+def _build_model_configs(args, varying_param):
+    """Build the list of per-model config dicts based on the varying parameter."""
     model_configs = []
     if varying_param == 'innerdiv':
         for innerdiv_val in args.innerdiv:
@@ -382,9 +377,12 @@ Examples:
                 'layer_length': layer_val,
                 'label': f'layer{layer_val}'
             })
+    return model_configs
 
+
+def _print_config_banner(args, config, varying_param, model_configs):
+    """Print the multi-model comparison configuration banner."""
     num_models = len(model_configs)
-
     print(f"\n{'='*80}")
     print("MULTI-MODEL COMPARISON CONFIGURATION")
     print(f"{'='*80}")
@@ -401,12 +399,10 @@ Examples:
     for i, cfg in enumerate(model_configs, 1):
         print(f"   Model {i}: innerdiv={cfg['innerdiv']}, meta={cfg['meta']}, iterations={cfg['num_iterations']}, layer_length={cfg['layer_length']}")
 
-    # Load training data for normalization
-    print("\n📊 Loading TRAINING dataset for normalization...")
-    train_data_paths = get_train_data_paths(args.config, args.data_type)
-    norm_stats = load_and_normalize_data(train_data_paths)
 
-    # Load all MAML models
+def _load_all_maml_models(args, model_configs, device):
+    """Load all MAML models; returns the list or None on failure."""
+    num_models = len(model_configs)
     print(f"\n🤖 Loading {num_models} MAML models...")
     models = []
     for i, cfg in enumerate(model_configs, 1):
@@ -423,348 +419,388 @@ Examples:
         model = load_maml_model(model_path, device, layer_length=cfg['layer_length'])
         if model is None:
             print(f"❌ Failed to load model {i}, exiting")
-            return 1
+            return None
         models.append(model)
+    return models
 
-    # Load MLP model if requested
-    mlp_model = None
-    if args.compare_with_mlp:
-        print(f"\n🤖 Loading MLP model ({args.mlp_model_type})...")
-        mlp_model_path = get_mlp_model_path(
-            args.config,
-            data_type=args.data_type,
-            model_type=args.mlp_model_type,
-            num_iterations=args.mlp_iterations,
-            custom_path=args.mlp_model_path
+
+def _load_mlp_model_optional(args, config, device):
+    """Load MLP model if --compare_with_mlp; returns model, None (unused), or None on failure."""
+    if not args.compare_with_mlp:
+        return None
+    print(f"\n🤖 Loading MLP model ({args.mlp_model_type})...")
+    mlp_model_path = get_mlp_model_path(
+        args.config,
+        data_type=args.data_type,
+        model_type=args.mlp_model_type,
+        num_iterations=args.mlp_iterations,
+        custom_path=args.mlp_model_path
+    )
+    mlp_model = load_mlp_model(mlp_model_path, args.mlp_model_type, device)
+    if mlp_model is None:
+        print(f"❌ Failed to load MLP model, exiting")
+        return None
+    return mlp_model
+
+
+def _new_model_data_slot():
+    """Factory: empty per-label accumulator dict."""
+    return {
+        'predictions': [],
+        'actuals': [],
+        'rmse': [], 'rmse_l': [], 'rmse_r': [], 'rmse_in': [],
+        'nrmse': [], 'extra_l': [], 'extra_r': [], 'inter': [],
+        'adam_count': 0
+    }
+
+
+def _load_and_prepare_test_data(args, cell, norm_stats, device):
+    """Load, reshape, normalize, and analyze continuity of test data.
+
+    Returns (test_data_input, test_data_output, discontinuous_task_ids) or
+    (None, None, None) if data missing.
+    """
+    print("\n📊 Loading TEST dataset...")
+    test_input_path, test_output_path = get_test_data_paths(args.config, cell, args.data_type)
+
+    try:
+        test_data_input = torch.load(test_input_path)
+        test_data_output = torch.load(test_output_path)
+    except FileNotFoundError as e:
+        print(f"⚠️ Test data not found for cell {cell}: {e}")
+        return None, None, None
+
+    if len(test_data_output.shape) == 2:
+        test_data_output = test_data_output.unsqueeze(-1)
+
+    print(f"Test input shape: {test_data_input.shape}")
+    print(f"Number of test samples: {len(test_data_input)}")
+
+    # Apply normalization
+    apply_normalization(test_data_input, norm_stats)
+
+    # Analyze continuity
+    print("\n🔍 Analyzing data continuity...")
+    continuous_task_ids, discontinuous_task_ids, continuity_analysis = analyze_continuity(
+        test_data_input, test_data_output, threshold_ratio=0.18
+    )
+
+    # Move to GPU
+    test_data_input = test_data_input.to(device)
+    test_data_output = test_data_output.to(device)
+
+    return test_data_input, test_data_output, discontinuous_task_ids
+
+
+def _evaluate_task_all_models(models, model_configs, mlp_model, args,
+                              test_data_input, test_data_output, randomtask,
+                              indices, middle_idx, device):
+    """Run evaluate_single_task for every MAML model + optional MLP model.
+
+    Returns (results_list, mlp_result_or_None).
+    """
+    results = []
+    for model, cfg in zip(models, model_configs):
+        result = evaluate_single_task(
+            model, test_data_input, test_data_output, randomtask,
+            indices, middle_idx, args.left_bound, args.right_bound,
+            args.total_points, args.mode, device, model_type='maml', layer_length=cfg['layer_length'],
+            adaptation_method=args.adaptation_method
         )
-        mlp_model = load_mlp_model(mlp_model_path, args.mlp_model_type, device)
-        if mlp_model is None:
-            print(f"❌ Failed to load MLP model, exiting")
-            return 1
+        results.append(result)
 
-    # Initialize results storage for all models
-    all_results = {cfg['label']: {} for cfg in model_configs}
+    mlp_result = None
     if args.compare_with_mlp:
-        all_results['MLP'] = {}
+        mlp_result = evaluate_single_task(
+            mlp_model, test_data_input, test_data_output, randomtask,
+            indices, middle_idx, args.left_bound, args.right_bound,
+            args.total_points, args.mode, device, model_type='mlp',
+            adaptation_method=args.adaptation_method
+        )
+    return results, mlp_result
 
-    # Random sampling setup
-    indices = args.indices
-    middle_idx = len(indices) // 2
 
-    # Process each cell type
-    for cell in args.cells:
-        print(f"\n{'='*80}")
-        print(f"Processing cell: {cell}")
-        print(f"{'='*80}")
+def _check_all_results_valid(results, mlp_result, compare_with_mlp):
+    """Return True iff all results are non-None with finite nrmse_total."""
+    all_models_succeeded = all(r is not None for r in results)
+    if compare_with_mlp:
+        all_models_succeeded = all_models_succeeded and (mlp_result is not None)
+    if not all_models_succeeded:
+        return False
 
-        # Initialize collections for all models
-        model_data = {}
-        for cfg in model_configs:
-            model_data[cfg['label']] = {
-                'predictions': [],
-                'actuals': [],
-                'rmse': [], 'rmse_l': [], 'rmse_r': [], 'rmse_in': [],
-                'nrmse': [], 'extra_l': [], 'extra_r': [], 'inter': [],
-                'adam_count': 0
-            }
+    all_valid = all(
+        not (torch.isinf(torch.tensor(r['nrmse_total'])) or
+             torch.isnan(torch.tensor(r['nrmse_total'])))
+        for r in results
+    )
+    if compare_with_mlp and all_valid:
+        all_valid = all_valid and not (
+            torch.isinf(torch.tensor(mlp_result['nrmse_total'])) or
+            torch.isnan(torch.tensor(mlp_result['nrmse_total']))
+        )
+    return all_valid
 
-        # Initialize MLP data if comparing with MLP
-        if args.compare_with_mlp:
-            model_data['MLP'] = {
-                'predictions': [],
-                'actuals': [],
-                'rmse': [], 'rmse_l': [], 'rmse_r': [], 'rmse_in': [],
-                'nrmse': [], 'extra_l': [], 'extra_r': [], 'inter': [],
-                'adam_count': 0
-            }
 
-        # Load test dataset
-        print("\n📊 Loading TEST dataset...")
-        test_input_path, test_output_path = get_test_data_paths(args.config, cell, args.data_type)
+def _store_task_result(data, result):
+    """Append a single evaluate_single_task result into an accumulator slot."""
+    data['rmse'].append(result['rmse_total'])
+    data['rmse_l'].append(result['rmse_left'])
+    data['rmse_r'].append(result['rmse_right'])
+    data['rmse_in'].append(result['rmse_inter'])
+    data['nrmse'].append(result['nrmse_total'])
+    data['extra_l'].append(result['nrmse_left'])
+    data['extra_r'].append(result['nrmse_right'])
+    data['inter'].append(result['nrmse_inter'])
+    if result['adam_used']:
+        data['adam_count'] += 1
+    data['predictions'].extend(result['predictions'])
+    data['actuals'].extend(result['actuals'])
 
-        try:
-            test_data_input = torch.load(test_input_path)
-            test_data_output = torch.load(test_output_path)
-        except FileNotFoundError as e:
-            print(f"⚠️ Test data not found for cell {cell}: {e}")
+
+def _print_progress_comparison(model_data, model_configs, args, task_idx, num_test_samples):
+    """Print the every-100-tasks comparison table (RMSE + NRMSE)."""
+    num_models = len(model_configs)
+    first_label = model_configs[0]['label']
+    if len(model_data[first_label]['nrmse']) == 0:
+        return
+    print(f"\n📊 Progress: {task_idx}/{num_test_samples} | Valid: {len(model_data[first_label]['nrmse'])}")
+
+    # Dynamic column widths
+    col_width = 18
+    total_models = num_models + (1 if args.compare_with_mlp else 0)
+    line_width = 20 + col_width * total_models + 12 * (total_models - 1)
+    print(f"{'─'*line_width}")
+
+    # Header
+    header = f"{'Metric':<20}"
+    for cfg in model_configs:
+        header += f"{cfg['label']:>{col_width}}"
+    if args.compare_with_mlp:
+        header += f"{'MLP':>{col_width}}"
+    for i in range(total_models - 1):
+        header += f"{'Diff(' + str(i+1) + '-' + str(i) + ')':>12}"
+    print(header)
+    print(f"{'─'*line_width}")
+
+    # RMSE
+    rmse_line = f"{'RMSE (ns)':<20}"
+    rmse_vals = []
+    for cfg in model_configs:
+        data = model_data[cfg['label']]
+        avg = sum(data['rmse']) / len(data['rmse'])
+        rmse_vals.append(avg)
+        rmse_line += f"{avg*1000:>{col_width}.4f}"
+    if args.compare_with_mlp:
+        mlp_data = model_data['MLP']
+        if len(mlp_data['rmse']) > 0:
+            avg = sum(mlp_data['rmse']) / len(mlp_data['rmse'])
+            rmse_vals.append(avg)
+            rmse_line += f"{avg*1000:>{col_width}.4f}"
+    for i in range(len(rmse_vals) - 1):
+        diff = (rmse_vals[i+1] - rmse_vals[i]) * 1000
+        symbol = "✓" if diff < 0 else "✗"
+        rmse_line += f"{diff:>11.4f}{symbol}"
+    print(rmse_line)
+
+    # NRMSE (max-min based)
+    nrmse_line = f"{'NRMSE (%)':<20}"
+    nrmse_vals = []
+    for cfg in model_configs:
+        data = model_data[cfg['label']]
+        avg = sum(data['nrmse']) / len(data['nrmse'])
+        nrmse_vals.append(avg)
+        nrmse_line += f"{avg:>{col_width}.2f}"
+    if args.compare_with_mlp:
+        mlp_data = model_data['MLP']
+        if len(mlp_data['nrmse']) > 0:
+            avg = sum(mlp_data['nrmse']) / len(mlp_data['nrmse'])
+            nrmse_vals.append(avg)
+            nrmse_line += f"{avg:>{col_width}.2f}"
+    for i in range(len(nrmse_vals) - 1):
+        diff = nrmse_vals[i+1] - nrmse_vals[i]
+        symbol = "✓" if diff < 0 else "✗"
+        nrmse_line += f"{diff:>11.2f}{symbol}"
+    print(nrmse_line)
+
+    print(f"{'─'*line_width}")
+
+
+def _run_task_loop(models, model_configs, mlp_model, args, test_data_input,
+                   test_data_output, discontinuous_task_ids, indices, middle_idx,
+                   device, model_data):
+    """Iterate over random test tasks, evaluating & accumulating into model_data."""
+    num_test_samples = min(args.num_test_samples, len(test_data_input))
+    test_indices = random.sample(range(len(test_data_input)), num_test_samples)
+
+    print(f"\n🎲 Testing {num_test_samples} random tasks")
+    print(f"{'='*80}")
+
+    valid_count = 0
+    for task_idx, randomtask in enumerate(test_indices):
+        # Simple progress indicator (always prints)
+        if task_idx % 100 == 0:
+            print(f"  Task {task_idx}/{num_test_samples} | Valid: {valid_count}", flush=True)
+
+        # Skip discontinuous tasks
+        if randomtask in discontinuous_task_ids:
             continue
 
-        if len(test_data_output.shape) == 2:
-            test_data_output = test_data_output.unsqueeze(-1)
-
-        print(f"Test input shape: {test_data_input.shape}")
-        print(f"Number of test samples: {len(test_data_input)}")
-
-        # Apply normalization
-        apply_normalization(test_data_input, norm_stats)
-
-        # Analyze continuity
-        print("\n🔍 Analyzing data continuity...")
-        continuous_task_ids, discontinuous_task_ids, continuity_analysis = analyze_continuity(
-            test_data_input, test_data_output, threshold_ratio=0.18
+        results, mlp_result = _evaluate_task_all_models(
+            models, model_configs, mlp_model, args,
+            test_data_input, test_data_output, randomtask,
+            indices, middle_idx, device
         )
 
-        # Move to GPU
-        test_data_input = test_data_input.to(device)
-        test_data_output = test_data_output.to(device)
-
-        # Test sampling
-        num_test_samples = min(args.num_test_samples, len(test_data_input))
-        test_indices = random.sample(range(len(test_data_input)), num_test_samples)
-
-        print(f"\n🎲 Testing {num_test_samples} random tasks")
-        print(f"{'='*80}")
-
-        # Process test tasks
-        valid_count = 0
-        for task_idx, randomtask in enumerate(test_indices):
-            # Simple progress indicator (always prints)
-            if task_idx % 100 == 0:
-                print(f"  Task {task_idx}/{num_test_samples} | Valid: {valid_count}", flush=True)
-
-            # Skip discontinuous tasks
-            if randomtask in discontinuous_task_ids:
-                continue
-
-            # Evaluate ALL models on the SAME task
-            results = []
-            for model, cfg in zip(models, model_configs):
-                result = evaluate_single_task(
-                    model, test_data_input, test_data_output, randomtask,
-                    indices, middle_idx, args.left_bound, args.right_bound,
-                    args.total_points, args.mode, device, model_type='maml', layer_length=cfg['layer_length'],
-                    adaptation_method=args.adaptation_method
-                )
-                results.append(result)
-
-            # Evaluate MLP if enabled
-            mlp_result = None
+        if _check_all_results_valid(results, mlp_result, args.compare_with_mlp):
+            valid_count += 1
+            # Store results for all models
+            for cfg, result in zip(model_configs, results):
+                _store_task_result(model_data[cfg['label']], result)
+            # Store MLP results if enabled
             if args.compare_with_mlp:
-                mlp_result = evaluate_single_task(
-                    mlp_model, test_data_input, test_data_output, randomtask,
-                    indices, middle_idx, args.left_bound, args.right_bound,
-                    args.total_points, args.mode, device, model_type='mlp',
-                    adaptation_method=args.adaptation_method
-                )
+                _store_task_result(model_data['MLP'], mlp_result)
 
-            # Check if all models succeeded
-            all_models_succeeded = all(r is not None for r in results)
-            if args.compare_with_mlp:
-                all_models_succeeded = all_models_succeeded and (mlp_result is not None)
+        # Real-time comparison every 100 samples
+        if task_idx % 100 == 0 and task_idx > 0:
+            _print_progress_comparison(model_data, model_configs, args, task_idx, num_test_samples)
 
-            if all_models_succeeded:
-                # Check for valid metrics
-                all_valid = all(
-                    not (torch.isinf(torch.tensor(r['nrmse_total'])) or
-                         torch.isnan(torch.tensor(r['nrmse_total'])))
-                    for r in results
-                )
+    return num_test_samples
 
-                # Also check MLP validity if enabled
-                if args.compare_with_mlp and all_valid:
-                    all_valid = all_valid and not (
-                        torch.isinf(torch.tensor(mlp_result['nrmse_total'])) or
-                        torch.isnan(torch.tensor(mlp_result['nrmse_total']))
-                    )
 
-                if all_valid:
-                    valid_count += 1
-                    # Store results for all models
-                    for cfg, result in zip(model_configs, results):
-                        label = cfg['label']
-                        data = model_data[label]
+def _aggregate_cell_results(model_data, all_results, cell, model_configs, args):
+    """Fold per-cell accumulators into the all_results dict of avg RMSE/NRMSE rows."""
+    for cfg in model_configs:
+        label = cfg['label']
+        data = model_data[label]
 
-                        data['rmse'].append(result['rmse_total'])
-                        data['rmse_l'].append(result['rmse_left'])
-                        data['rmse_r'].append(result['rmse_right'])
-                        data['rmse_in'].append(result['rmse_inter'])
-                        data['nrmse'].append(result['nrmse_total'])
-                        data['extra_l'].append(result['nrmse_left'])
-                        data['extra_r'].append(result['nrmse_right'])
-                        data['inter'].append(result['nrmse_inter'])
-                        if result['adam_used']:
-                            data['adam_count'] += 1
-                        data['predictions'].extend(result['predictions'])
-                        data['actuals'].extend(result['actuals'])
+        if len(data['nrmse']) > 0:
+            all_results[label][f"RMSE_{cell}"] = [[
+                sum(data['rmse'])/len(data['rmse']),
+                sum(data['rmse_l'])/len(data['rmse_l']),
+                sum(data['rmse_r'])/len(data['rmse_r']),
+                sum(data['rmse_in'])/len(data['rmse_in'])
+            ]]
+            all_results[label][f"NRMSE_{cell}"] = [[
+                sum(data['nrmse'])/len(data['nrmse']),
+                sum(data['extra_l'])/len(data['extra_l']),
+                sum(data['extra_r'])/len(data['extra_r']),
+                sum(data['inter'])/len(data['inter'])
+            ]]
 
-                    # Store MLP results if enabled
-                    if args.compare_with_mlp:
-                        mlp_data = model_data['MLP']
-                        mlp_data['rmse'].append(mlp_result['rmse_total'])
-                        mlp_data['rmse_l'].append(mlp_result['rmse_left'])
-                        mlp_data['rmse_r'].append(mlp_result['rmse_right'])
-                        mlp_data['rmse_in'].append(mlp_result['rmse_inter'])
-                        mlp_data['nrmse'].append(mlp_result['nrmse_total'])
-                        mlp_data['extra_l'].append(mlp_result['nrmse_left'])
-                        mlp_data['extra_r'].append(mlp_result['nrmse_right'])
-                        mlp_data['inter'].append(mlp_result['nrmse_inter'])
-                        if mlp_result['adam_used']:
-                            mlp_data['adam_count'] += 1
-                        mlp_data['predictions'].extend(mlp_result['predictions'])
-                        mlp_data['actuals'].extend(mlp_result['actuals'])
+    if args.compare_with_mlp:
+        mlp_data = model_data['MLP']
+        if len(mlp_data['nrmse']) > 0:
+            all_results['MLP'][f"RMSE_{cell}"] = [[
+                sum(mlp_data['rmse'])/len(mlp_data['rmse']),
+                sum(mlp_data['rmse_l'])/len(mlp_data['rmse_l']),
+                sum(mlp_data['rmse_r'])/len(mlp_data['rmse_r']),
+                sum(mlp_data['rmse_in'])/len(mlp_data['rmse_in'])
+            ]]
+            all_results['MLP'][f"NRMSE_{cell}"] = [[
+                sum(mlp_data['nrmse'])/len(mlp_data['nrmse']),
+                sum(mlp_data['extra_l'])/len(mlp_data['extra_l']),
+                sum(mlp_data['extra_r'])/len(mlp_data['extra_r']),
+                sum(mlp_data['inter'])/len(mlp_data['inter'])
+            ]]
 
-            # Real-time comparison every 100 samples
-            if task_idx % 100 == 0 and task_idx > 0:
-                first_label = model_configs[0]['label']
-                if len(model_data[first_label]['nrmse']) > 0:
-                    print(f"\n📊 Progress: {task_idx}/{num_test_samples} | Valid: {len(model_data[first_label]['nrmse'])}")
 
-                    # Dynamic column widths
-                    col_width = 18
-                    total_models = num_models + (1 if args.compare_with_mlp else 0)
-                    line_width = 20 + col_width * total_models + 12 * (total_models - 1)
-                    print(f"{'─'*line_width}")
+def _save_cell_npy_results(model_data, model_configs, args, config, cell):
+    """Save per-model prediction/actual arrays to .npy files."""
+    os.makedirs("data_result_npy_directory", exist_ok=True)
 
-                    # Header
-                    header = f"{'Metric':<20}"
-                    for cfg in model_configs:
-                        header += f"{cfg['label']:>{col_width}}"
-                    if args.compare_with_mlp:
-                        header += f"{'MLP':>{col_width}}"
-                    for i in range(total_models - 1):
-                        header += f"{'Diff(' + str(i+1) + '-' + str(i) + ')':>12}"
-                    print(header)
-                    print(f"{'─'*line_width}")
+    # Adaptation method suffix (only for adam, selective_adam has no suffix for backward compatibility)
+    adapt_suffix = "_adam" if args.adaptation_method == 'adam' else ""
 
-                    # RMSE
-                    rmse_line = f"{'RMSE (ns)':<20}"
-                    rmse_vals = []
-                    for cfg in model_configs:
-                        data = model_data[cfg['label']]
-                        avg = sum(data['rmse']) / len(data['rmse'])
-                        rmse_vals.append(avg)
-                        rmse_line += f"{avg*1000:>{col_width}.4f}"
-                    if args.compare_with_mlp:
-                        mlp_data = model_data['MLP']
-                        if len(mlp_data['rmse']) > 0:
-                            avg = sum(mlp_data['rmse']) / len(mlp_data['rmse'])
-                            rmse_vals.append(avg)
-                            rmse_line += f"{avg*1000:>{col_width}.4f}"
-                    for i in range(len(rmse_vals) - 1):
-                        diff = (rmse_vals[i+1] - rmse_vals[i]) * 1000
-                        symbol = "✓" if diff < 0 else "✗"
-                        rmse_line += f"{diff:>11.4f}{symbol}"
-                    print(rmse_line)
+    for cfg in model_configs:
+        label = cfg['label']
+        data = model_data[label]
 
-                    # NRMSE (max-min based)
-                    nrmse_line = f"{'NRMSE (%)':<20}"
-                    nrmse_vals = []
-                    for cfg in model_configs:
-                        data = model_data[cfg['label']]
-                        avg = sum(data['nrmse']) / len(data['nrmse'])
-                        nrmse_vals.append(avg)
-                        nrmse_line += f"{avg:>{col_width}.2f}"
-                    if args.compare_with_mlp:
-                        mlp_data = model_data['MLP']
-                        if len(mlp_data['nrmse']) > 0:
-                            avg = sum(mlp_data['nrmse']) / len(mlp_data['nrmse'])
-                            nrmse_vals.append(avg)
-                            nrmse_line += f"{avg:>{col_width}.2f}"
-                    for i in range(len(nrmse_vals) - 1):
-                        diff = nrmse_vals[i+1] - nrmse_vals[i]
-                        symbol = "✓" if diff < 0 else "✗"
-                        nrmse_line += f"{diff:>11.2f}{symbol}"
-                    print(nrmse_line)
+        # Build full parameter string for filename
+        innerdiv = cfg['innerdiv']
+        meta = cfg['meta']
+        iterations = cfg['num_iterations']
+        layer_length = cfg['layer_length']
 
-                    print(f"{'─'*line_width}")
+        pred_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{args.data_type}_{args.mode}_MAML_innerdiv{innerdiv}_meta{meta}_layer{layer_length}_{iterations}{adapt_suffix}_pred.npy"
+        act_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{args.data_type}_{args.mode}_MAML_innerdiv{innerdiv}_meta{meta}_layer{layer_length}_{iterations}{adapt_suffix}_act.npy"
 
-        # Final results for this cell
-        first_label = model_configs[0]['label']
-        num_valid = len(model_data[first_label]['nrmse'])
-        print(f"\n✅ Completed {num_valid} valid tasks for {cell}")
+        np.save(pred_filename, data['predictions'])
+        np.save(act_filename, data['actuals'])
+        print(f"💾 Saved {label}: {os.path.basename(pred_filename)}")
 
-        # Store aggregated results
-        for cfg in model_configs:
-            label = cfg['label']
-            data = model_data[label]
+    # Save MLP results if enabled
+    if args.compare_with_mlp:
+        mlp_data = model_data['MLP']
+        mlp_pred_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{args.data_type}_{args.mode}_{args.mlp_model_type}_{args.mlp_iterations}{adapt_suffix}_pred.npy"
+        mlp_act_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{args.data_type}_{args.mode}_{args.mlp_model_type}_{args.mlp_iterations}{adapt_suffix}_act.npy"
 
-            if len(data['nrmse']) > 0:
-                all_results[label][f"RMSE_{cell}"] = [[
-                    sum(data['rmse'])/len(data['rmse']),
-                    sum(data['rmse_l'])/len(data['rmse_l']),
-                    sum(data['rmse_r'])/len(data['rmse_r']),
-                    sum(data['rmse_in'])/len(data['rmse_in'])
-                ]]
-                all_results[label][f"NRMSE_{cell}"] = [[
-                    sum(data['nrmse'])/len(data['nrmse']),
-                    sum(data['extra_l'])/len(data['extra_l']),
-                    sum(data['extra_r'])/len(data['extra_r']),
-                    sum(data['inter'])/len(data['inter'])
-                ]]
+        np.save(mlp_pred_filename, mlp_data['predictions'])
+        np.save(mlp_act_filename, mlp_data['actuals'])
+        print(f"💾 Saved MLP: {os.path.basename(mlp_pred_filename)}")
 
-        # Store MLP results if enabled
-        if args.compare_with_mlp:
-            mlp_data = model_data['MLP']
-            if len(mlp_data['nrmse']) > 0:
-                all_results['MLP'][f"RMSE_{cell}"] = [[
-                    sum(mlp_data['rmse'])/len(mlp_data['rmse']),
-                    sum(mlp_data['rmse_l'])/len(mlp_data['rmse_l']),
-                    sum(mlp_data['rmse_r'])/len(mlp_data['rmse_r']),
-                    sum(mlp_data['rmse_in'])/len(mlp_data['rmse_in'])
-                ]]
-                all_results['MLP'][f"NRMSE_{cell}"] = [[
-                    sum(mlp_data['nrmse'])/len(mlp_data['nrmse']),
-                    sum(mlp_data['extra_l'])/len(mlp_data['extra_l']),
-                    sum(mlp_data['extra_r'])/len(mlp_data['extra_r']),
-                    sum(mlp_data['inter'])/len(mlp_data['inter'])
-                ]]
 
-        # Save results if requested
-        if args.save_results:
-            os.makedirs("data_result_npy_directory", exist_ok=True)
+def _print_cell_final_results(all_results, model_configs, cell, args):
+    """Print detailed per-model FINAL RESULTS block for a cell."""
+    print(f"\n{'='*80}")
+    print(f"FINAL RESULTS FOR {cell}")
+    print(f"{'='*80}")
 
-            # Adaptation method suffix (only for adam, selective_adam has no suffix for backward compatibility)
-            adapt_suffix = "_adam" if args.adaptation_method == 'adam' else ""
+    for cfg in model_configs:
+        label = cfg['label']
+        print(f"\n{label}:")
+        print(f"{'─'*80}")
+        for key, value in all_results[label].items():
+            if cell in key:
+                print(f"  {key}: {np.array(value[0])}")
 
-            for cfg in model_configs:
-                label = cfg['label']
-                data = model_data[label]
+    # Print MLP results if enabled
+    if args.compare_with_mlp:
+        print(f"\nMLP ({args.mlp_model_type}, iter={args.mlp_iterations}):")
+        print(f"{'─'*80}")
+        for key, value in all_results['MLP'].items():
+            if cell in key:
+                print(f"  {key}: {np.array(value[0])}")
 
-                # Build full parameter string for filename
-                innerdiv = cfg['innerdiv']
-                meta = cfg['meta']
-                iterations = cfg['num_iterations']
-                layer_length = cfg['layer_length']
 
-                pred_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{args.data_type}_{args.mode}_MAML_innerdiv{innerdiv}_meta{meta}_layer{layer_length}_{iterations}{adapt_suffix}_pred.npy"
-                act_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{args.data_type}_{args.mode}_MAML_innerdiv{innerdiv}_meta{meta}_layer{layer_length}_{iterations}{adapt_suffix}_act.npy"
+def _process_cell(cell, args, config, models, model_configs, mlp_model,
+                  all_results, norm_stats, indices, middle_idx, device):
+    """Run the full evaluation pipeline for a single cell type."""
+    print(f"\n{'='*80}")
+    print(f"Processing cell: {cell}")
+    print(f"{'='*80}")
 
-                np.save(pred_filename, data['predictions'])
-                np.save(act_filename, data['actuals'])
-                print(f"💾 Saved {label}: {os.path.basename(pred_filename)}")
+    # Initialize collections for all models
+    model_data = {cfg['label']: _new_model_data_slot() for cfg in model_configs}
+    if args.compare_with_mlp:
+        model_data['MLP'] = _new_model_data_slot()
 
-            # Save MLP results if enabled
-            if args.compare_with_mlp:
-                mlp_data = model_data['MLP']
-                mlp_pred_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{args.data_type}_{args.mode}_{args.mlp_model_type}_{args.mlp_iterations}{adapt_suffix}_pred.npy"
-                mlp_act_filename = f"data_result_npy_directory/{args.output_prefix}_{config['topology_type']}_{cell}_{args.data_type}_{args.mode}_{args.mlp_model_type}_{args.mlp_iterations}{adapt_suffix}_act.npy"
+    test_data_input, test_data_output, discontinuous_task_ids = _load_and_prepare_test_data(
+        args, cell, norm_stats, device
+    )
+    if test_data_input is None:
+        return
 
-                np.save(mlp_pred_filename, mlp_data['predictions'])
-                np.save(mlp_act_filename, mlp_data['actuals'])
-                print(f"💾 Saved MLP: {os.path.basename(mlp_pred_filename)}")
+    num_test_samples = _run_task_loop(
+        models, model_configs, mlp_model, args,
+        test_data_input, test_data_output, discontinuous_task_ids,
+        indices, middle_idx, device, model_data
+    )
 
-        # Print detailed comparison for this cell
-        print(f"\n{'='*80}")
-        print(f"FINAL RESULTS FOR {cell}")
-        print(f"{'='*80}")
+    # Final results for this cell
+    first_label = model_configs[0]['label']
+    num_valid = len(model_data[first_label]['nrmse'])
+    print(f"\n✅ Completed {num_valid} valid tasks for {cell}")
 
-        for cfg in model_configs:
-            label = cfg['label']
-            print(f"\n{label}:")
-            print(f"{'─'*80}")
-            for key, value in all_results[label].items():
-                if cell in key:
-                    print(f"  {key}: {np.array(value[0])}")
+    _aggregate_cell_results(model_data, all_results, cell, model_configs, args)
 
-        # Print MLP results if enabled
-        if args.compare_with_mlp:
-            print(f"\nMLP ({args.mlp_model_type}, iter={args.mlp_iterations}):")
-            print(f"{'─'*80}")
-            for key, value in all_results['MLP'].items():
-                if cell in key:
-                    print(f"  {key}: {np.array(value[0])}")
+    if args.save_results:
+        _save_cell_npy_results(model_data, model_configs, args, config, cell)
 
-    # Overall summary
+    _print_cell_final_results(all_results, model_configs, cell, args)
+
+
+def _print_overall_summary(all_results, model_configs):
+    """Print the OVERALL COMPARISON SUMMARY block."""
     print(f"\n{'='*80}")
     print("OVERALL COMPARISON SUMMARY")
     print(f"{'='*80}")
@@ -776,6 +812,62 @@ Examples:
         for key, value in all_results[label].items():
             print(f"{key}: {np.array(value[0])}")
 
+
+def main():
+    parser = _build_argparser()
+    args = parser.parse_args()
+
+    _validate_vary_counts(args, parser)
+
+    # Get configuration
+    try:
+        config = get_test_config(args.config)
+    except ValueError as e:
+        print(f"Error: {e}")
+        print_available_configs()
+        return 1
+
+    _resolve_config_defaults(args, config)
+    _setup_indices_and_bounds(args)
+
+    # GPU settings
+    os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print('Device:', device)
+
+    varying_param = args.vary
+    model_configs = _build_model_configs(args, varying_param)
+    _print_config_banner(args, config, varying_param, model_configs)
+
+    # Load training data for normalization
+    print("\n📊 Loading TRAINING dataset for normalization...")
+    train_data_paths = get_train_data_paths(args.config, args.data_type)
+    norm_stats = load_and_normalize_data(train_data_paths)
+
+    models = _load_all_maml_models(args, model_configs, device)
+    if models is None:
+        return 1
+
+    mlp_model = _load_mlp_model_optional(args, config, device)
+    if args.compare_with_mlp and mlp_model is None:
+        return 1
+
+    # Initialize results storage for all models
+    all_results = {cfg['label']: {} for cfg in model_configs}
+    if args.compare_with_mlp:
+        all_results['MLP'] = {}
+
+    # Random sampling setup
+    indices = args.indices
+    middle_idx = len(indices) // 2
+
+    for cell in args.cells:
+        _process_cell(cell, args, config, models, model_configs, mlp_model,
+                      all_results, norm_stats, indices, middle_idx, device)
+
+    _print_overall_summary(all_results, model_configs)
     return 0
 
 
