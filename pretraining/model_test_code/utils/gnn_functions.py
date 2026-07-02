@@ -44,6 +44,123 @@ def _make_train_criterion(asym_alpha=None, pinball_tau=None):
     return asym_mse
 
 
+# ---------------- Shared GNN training/eval helpers ----------------
+
+def _to_device_tensor(x, device):
+    """Cast x to a device tensor (identity for tensors, wrap-then-cast for scalars)."""
+    return x.to(device) if isinstance(x, torch.Tensor) else torch.tensor(x).to(device)
+
+
+def _setup_norm_tensors(y, true_function, std, mean, move, device):
+    """Move y/true_function to device (y as column vector); wrap std/mean/move as device tensors."""
+    y = y.to(device).view(-1, 1)
+    true_function = true_function.to(device)
+    return (y, true_function,
+            _to_device_tensor(std, device),
+            _to_device_tensor(mean, device),
+            _to_device_tensor(move, device))
+
+
+def _detect_gnn_model_type(initial_model):
+    """
+    Detect model family + node_features dim from a pretrained GNN.
+
+    Returns ("hetero" | "gat" | "gcn", node_features).
+    HeteroGNN is identified by input_linears; GAT has 'heads' on plain GCNConv models.
+    """
+    if hasattr(initial_model, 'input_linears'):
+        return 'hetero', initial_model.input_linears[0].weight.shape[1]
+    node_features = initial_model.convs[0].lin.weight.shape[1]
+    if hasattr(initial_model, 'heads'):
+        return 'gat', node_features
+    return 'gcn', node_features
+
+
+def _clone_gnn_model(initial_model, model_type, node_features, device):
+    """Build a fresh model matching initial_model's config, load its state, move to device."""
+    common_kwargs = dict(
+        node_features=node_features,
+        conv_hidden_dim=initial_model.conv_hidden_dim,
+        num_conv_layers=initial_model.num_conv_layers,
+        fc_hidden_dim=initial_model.fc_hidden_dim,
+        num_fc_layers=initial_model.num_fc_layers,
+        pooling=initial_model.pooling_type,
+        output_dim=1,
+        dropout=0.0,
+    )
+    if model_type == 'hetero':
+        from hetero_gnn_maml import create_maml_hetero_gnn_model
+        model = create_maml_hetero_gnn_model(
+            **common_kwargs,
+            num_node_types=initial_model.num_node_types,
+            conv_type=initial_model.conv_type,
+            heads=initial_model.heads if hasattr(initial_model, 'heads') else 4,
+        ).to(device)
+    elif model_type == 'gat':
+        from gnn_maml import create_maml_gat_model
+        model = create_maml_gat_model(
+            **common_kwargs,
+            heads=initial_model.heads,
+        ).to(device)
+    else:  # gcn
+        from gnn_maml import create_maml_gcn_model
+        model = create_maml_gcn_model(**common_kwargs).to(device)
+    model.load_state_dict(initial_model.state_dict())
+    return model
+
+
+def _get_sample_adjacency(cell_cache, sample, cache_type):
+    """Adjacency matrix for a minimal sample, dispatching on cache_type."""
+    if cache_type == 'stage_aware':
+        output_topo = cell_cache['output_topologies'][sample['output_name']]
+        key = 'pull_up' if 'rise' in sample['delay_type'] else 'pull_down'
+        return output_topo[key]['adjacency_matrix']
+    return cell_cache['adjacency_matrix']
+
+
+def _make_pyg_data(sample, topology_cache, cache_type, validate=False):
+    """
+    Build a PyG Data object from a minimal_sample + topology_cache.
+
+    validate=True raises ValueError on missing cell/output and on edge indices
+    that exceed the node count.
+    """
+    cell_name = sample['cell_name']
+    if validate and cell_name not in topology_cache:
+        raise ValueError(f"Cell {cell_name} not found in topology cache")
+    cell_cache = topology_cache[cell_name]
+    if (validate and cache_type == 'stage_aware'
+            and sample['output_name'] not in cell_cache['output_topologies']):
+        raise ValueError(f"Output {sample['output_name']} not found for cell {cell_name}")
+
+    adjacency = _get_sample_adjacency(cell_cache, sample, cache_type)
+    node_features = sample['node_features']
+    edge_index = adjacency.nonzero().t()
+
+    if validate and edge_index.numel() > 0:
+        max_idx = edge_index.max().item()
+        num_nodes = node_features.shape[0]
+        if max_idx >= num_nodes:
+            raise ValueError(
+                f"Edge index out of bounds for cell {cell_name}: "
+                f"max_idx={max_idx}, num_nodes={num_nodes}"
+            )
+    return Data(x=node_features, edge_index=edge_index)
+
+
+def _run_inner_adam_loop(model, X_batch, y_train, train_criterion, K, num_steps, inner_adam_lr,
+                         record_losses=None):
+    """Inner-loop Adam optimisation on the support batch; append per-step loss if record_losses is given."""
+    optimizer = torch.optim.Adam(model.parameters(), lr=inner_adam_lr, weight_decay=1e-4)
+    for _ in range(num_steps):
+        loss = train_criterion(model(X_batch), y_train) / K
+        if record_losses is not None:
+            record_losses.append(loss.item())
+        model.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+
 def model_functions_at_training_gnn(initial_model, X_samples, y, true_samples, true_function,
                                    topology_cache, cache_type, norm_stats, normalize_fn,
                                    optim=torch.optim.SGD, lr=0.003, adam_step=0, std=1, mean=10, move=0,
@@ -76,185 +193,67 @@ def model_functions_at_training_gnn(initial_model, X_samples, y, true_samples, t
         mode: 'extrapolation' or 'interpolation'
     """
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    y, true_function, std, mean, move = _setup_norm_tensors(y, true_function, std, mean, move, device)
 
-    y = y.to(device).view(-1, 1)
-    true_function = true_function.to(device)
-    std = std.to(device) if isinstance(std, torch.Tensor) else torch.tensor(std).to(device)
-    mean = mean.to(device) if isinstance(mean, torch.Tensor) else torch.tensor(mean).to(device)
-    move = move.to(device) if isinstance(move, torch.Tensor) else torch.tensor(move).to(device)
-
-    # Import GNN model - detect model type (GCN vs GAT vs HeteroGNN)
-    from gnn_maml import create_maml_gcn_model, create_maml_gat_model
-    # Get node_features from initial_model's first conv layer weight shape
-    # HeteroGNN uses input_linears instead of convs[0].lin
-    if hasattr(initial_model, 'input_linears'):
-        node_features = initial_model.input_linears[0].weight.shape[1]
-    else:
-        node_features = initial_model.convs[0].lin.weight.shape[1]
-
-    # Check if model is GAT (has 'heads' attribute but not HeteroGNN)
-    is_gat = hasattr(initial_model, 'heads') and not hasattr(initial_model, 'input_linears')
-
-    # Check if model is HeteroGNN
-    is_hetero = hasattr(initial_model, 'input_linears')
-
-    if is_hetero:
-        from hetero_gnn_maml import create_maml_hetero_gnn_model
-        model = create_maml_hetero_gnn_model(
-            node_features=node_features,
-            conv_hidden_dim=initial_model.conv_hidden_dim,
-            num_conv_layers=initial_model.num_conv_layers,
-            fc_hidden_dim=initial_model.fc_hidden_dim,
-            num_fc_layers=initial_model.num_fc_layers,
-            pooling=initial_model.pooling_type,
-            output_dim=1,
-            dropout=0.0,
-            num_node_types=initial_model.num_node_types,
-            conv_type=initial_model.conv_type,
-            heads=initial_model.heads if hasattr(initial_model, 'heads') else 4
-        ).to(device)
-    elif is_gat:
-        model = create_maml_gat_model(
-            node_features=node_features,
-            conv_hidden_dim=initial_model.conv_hidden_dim,
-            num_conv_layers=initial_model.num_conv_layers,
-            fc_hidden_dim=initial_model.fc_hidden_dim,
-            num_fc_layers=initial_model.num_fc_layers,
-            heads=initial_model.heads,
-            pooling=initial_model.pooling_type,
-            output_dim=1,
-            dropout=0.0
-        ).to(device)
-    else:
-        model = create_maml_gcn_model(
-            node_features=node_features,
-            conv_hidden_dim=initial_model.conv_hidden_dim,
-            num_conv_layers=initial_model.num_conv_layers,
-            fc_hidden_dim=initial_model.fc_hidden_dim,
-            num_fc_layers=initial_model.num_fc_layers,
-            pooling=initial_model.pooling_type,
-            output_dim=1,
-            dropout=0.0
-        ).to(device)
-    model.load_state_dict(initial_model.state_dict())
+    # Rebuild a fresh copy of the pretrained model for inner-loop adaptation.
+    model_type, node_features = _detect_gnn_model_type(initial_model)
+    model = _clone_gnn_model(initial_model, model_type, node_features, device)
 
     criterion = nn.MSELoss()                       # for eval / metric reporting (fair comparison)
     train_criterion = _make_train_criterion(asym_alpha, pinball_tau)  # for inner-loop training only
-    optimiser = optim(model.parameters(), lr, weight_decay=1e-4)
+    _ = optim(model.parameters(), lr, weight_decay=1e-4)  # signature-compat; adaptation uses Adam below
     adam_condition_triggered = False
 
-    # Convert minimal samples to PyG Data objects
-    def create_pyg_data(minimal_sample):
-        """Create PyG Data object from minimal sample (assumes data is already normalized)"""
-        node_features = minimal_sample['node_features']
-        cell_name = minimal_sample['cell_name']
-
-        # Get adjacency matrix from topology cache
-        if cell_name not in topology_cache:
-            raise ValueError(f"Cell {cell_name} not found in topology cache")
-
-        cell_cache = topology_cache[cell_name]
-
-        if cache_type == 'stage_aware':
-            output_name = minimal_sample['output_name']
-            delay_type = minimal_sample['delay_type']
-
-            if output_name not in cell_cache['output_topologies']:
-                raise ValueError(f"Output {output_name} not found for cell {cell_name}")
-
-            output_topo = cell_cache['output_topologies'][output_name]
-
-            if 'rise' in delay_type:
-                adjacency_matrix = output_topo['pull_up']['adjacency_matrix']
-            else:
-                adjacency_matrix = output_topo['pull_down']['adjacency_matrix']
-        else:  # full_graph
-            adjacency_matrix = cell_cache['adjacency_matrix']
-
-        # Data is already normalized, use directly
-        # Create edge_index from adjacency matrix for GCN convolution
-        # GCNConv will perform A × X internally
-        edge_index = adjacency_matrix.nonzero().t()
-
-        # Validate edge_index doesn't exceed number of nodes
-        num_nodes = node_features.shape[0]
-        if edge_index.numel() > 0:
-            max_idx = edge_index.max().item()
-            if max_idx >= num_nodes:
-                raise ValueError(f"Edge index out of bounds for cell {cell_name}: "
-                               f"max_idx={max_idx}, num_nodes={num_nodes}")
-
-        # Create PyG Data with edge_index for GCN convolution
-        data = Data(x=node_features, edge_index=edge_index)
-
-        return data
-
-    # Train model on support set
     K = len(X_samples)
-
     losses = []
     outputs = {}
 
-    # Create support batch
-    support_batch_data = []
-    for sample in X_samples:
-        data = create_pyg_data(sample)
-        support_batch_data.append(data)
-
+    # Build support batch (validated pyg data) and probe the initial loss.
+    support_batch_data = [
+        _make_pyg_data(s, topology_cache, cache_type, validate=True) for s in X_samples
+    ]
     X_batch = Batch.from_data_list(support_batch_data).to(device)
     loss = train_criterion(model(X_batch), y) / K
 
-    # Adam training if SGD loss is still high
+    # Adam training if initial loss is still high.
     if loss > 1e-4:
         adam_condition_triggered = True
-        optimiser2 = torch.optim.Adam(model.parameters(), lr=inner_adam_lr, weight_decay=1e-4)
-        for step in range(1, adam_step+1):
-            loss = train_criterion(model(X_batch), y) / K
-            losses.append(loss.item())
+        _run_inner_adam_loop(model, X_batch, y, train_criterion, K,
+                             num_steps=adam_step, inner_adam_lr=inner_adam_lr,
+                             record_losses=losses)
 
-            # compute grad and update inner loop weights
-            model.zero_grad()
-            loss.backward()
-            optimiser2.step()
-
-    # Calculate losses on all 61 points
+    # Evaluate on all total_points using grad/move denormalization.
     total_loss = 0
     total_mape_loss = 0
     total_rmse_loss = 0
-
-    # Store predictions and actual values for plotting
     predictions = []
     actual_values = []
 
     model.eval()
     with torch.no_grad():
         for i in range(total_points):
-            # Create single sample batch
-            sample_data = create_pyg_data(true_samples[i])
+            sample_data = _make_pyg_data(true_samples[i], topology_cache, cache_type, validate=True)
             sample_batch = Batch.from_data_list([sample_data]).to(device)
 
-            # Predict
             pred_value = ((model(sample_batch).item() - move) * std + mean).item()
             actual_value = ((true_function[i] - move) * std + mean).item()
             predictions.append(pred_value)
             actual_values.append(actual_value)
 
             loss = criterion((model(sample_batch).item() - move) * std + mean,
-                           (true_function[i] - move) * std + mean)
+                             (true_function[i] - move) * std + mean)
 
-            # Calculate MAPE (Mean Absolute Percentage Error) and squared error for RMSE
-            if abs(actual_value) > 1e-8:  # Avoid division by zero
-                squared_error = (pred_value - actual_value) ** 2
-                mape_loss = abs((pred_value - actual_value) / actual_value)
-            else:
-                squared_error = (pred_value - actual_value) ** 2
-                mape_loss = 0
+            squared_error = (pred_value - actual_value) ** 2
+            # Guard MAPE at zero-valued targets (falls through to 0 contribution).
+            mape_loss = (
+                abs((pred_value - actual_value) / actual_value)
+                if abs(actual_value) > 1e-8 else 0
+            )
 
             total_loss += loss
             total_mape_loss += mape_loss
             total_rmse_loss += squared_error
 
-    # Calculate average losses
     import math
     avg_total_loss = total_loss / total_points
     avg_total_mape = total_mape_loss / total_points
@@ -292,22 +291,9 @@ def adapt_bilinear_residual_gnn(
     model = initial_model
     model.eval()
 
-    # Build PyG Data from a minimal sample (mirrors create_pyg_data inside training fn)
+    # PyG data factory (unvalidated — bilinear path is downstream of edge-index checks).
     def make_data(sample):
-        node_features = sample['node_features']
-        cell_name = sample['cell_name']
-        cell_cache = topology_cache[cell_name]
-        if cache_type == 'stage_aware':
-            output_name = sample['output_name']
-            delay_type = sample['delay_type']
-            output_topo = cell_cache['output_topologies'][output_name]
-            adj = (output_topo['pull_up']['adjacency_matrix']
-                   if 'rise' in delay_type
-                   else output_topo['pull_down']['adjacency_matrix'])
-        else:
-            adj = cell_cache['adjacency_matrix']
-        edge_index = adj.nonzero().t()
-        return Data(x=node_features, edge_index=edge_index)
+        return _make_pyg_data(sample, topology_cache, cache_type)
 
     # --- Classify support into 4 corners + 1 center ---
     if not all('voltage_idx' in s and 'temp_idx' in s for s in X_samples):
@@ -600,102 +586,31 @@ def model_functions_with_optim_mode_gnn(initial_model, X_samples, y, true_sample
     import math
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    # Determine if using grad/move scaling
+    # 'none' / 'selective_adam' rely on caller-supplied grad/move scaling; 'sgd'/'adam' normalize locally.
     use_grad_move = optim_mode in ['none', 'selective_adam']
 
-    y_tensor = y.clone().to(device).view(-1, 1)
-    true_function_tensor = true_function.clone().to(device)
-    std_tensor = std.to(device) if isinstance(std, torch.Tensor) else torch.tensor(std).to(device)
-    mean_tensor = mean.to(device) if isinstance(mean, torch.Tensor) else torch.tensor(mean).to(device)
-    move_tensor = move.to(device) if isinstance(move, torch.Tensor) else torch.tensor(move).to(device)
+    y_tensor, true_function_tensor, std_tensor, mean_tensor, move_tensor = _setup_norm_tensors(
+        y.clone(), true_function.clone(), std, mean, move, device,
+    )
 
-    from gnn_maml import create_maml_gcn_model, create_maml_gat_model
-    # Get node_features - HeteroGNN uses input_linears instead of convs[0].lin
-    if hasattr(initial_model, 'input_linears'):
-        node_features = initial_model.input_linears[0].weight.shape[1]
-    else:
-        node_features = initial_model.convs[0].lin.weight.shape[1]
-
-    # Check if model is GAT (has 'heads' attribute but not HeteroGNN)
-    is_gat = hasattr(initial_model, 'heads') and not hasattr(initial_model, 'input_linears')
-
-    # Check if model is HeteroGNN
-    is_hetero = hasattr(initial_model, 'input_linears')
-
-    if is_hetero:
-        from hetero_gnn_maml import create_maml_hetero_gnn_model
-        model = create_maml_hetero_gnn_model(
-            node_features=node_features,
-            conv_hidden_dim=initial_model.conv_hidden_dim,
-            num_conv_layers=initial_model.num_conv_layers,
-            fc_hidden_dim=initial_model.fc_hidden_dim,
-            num_fc_layers=initial_model.num_fc_layers,
-            pooling=initial_model.pooling_type,
-            output_dim=1,
-            dropout=0.0,
-            num_node_types=initial_model.num_node_types,
-            conv_type=initial_model.conv_type,
-            heads=initial_model.heads if hasattr(initial_model, 'heads') else 4
-        ).to(device)
-    elif is_gat:
-        model = create_maml_gat_model(
-            node_features=node_features,
-            conv_hidden_dim=initial_model.conv_hidden_dim,
-            num_conv_layers=initial_model.num_conv_layers,
-            fc_hidden_dim=initial_model.fc_hidden_dim,
-            num_fc_layers=initial_model.num_fc_layers,
-            heads=initial_model.heads,
-            pooling=initial_model.pooling_type,
-            output_dim=1,
-            dropout=0.0
-        ).to(device)
-    else:
-        model = create_maml_gcn_model(
-            node_features=node_features,
-            conv_hidden_dim=initial_model.conv_hidden_dim,
-            num_conv_layers=initial_model.num_conv_layers,
-            fc_hidden_dim=initial_model.fc_hidden_dim,
-            num_fc_layers=initial_model.num_fc_layers,
-            pooling=initial_model.pooling_type,
-            output_dim=1,
-            dropout=0.0
-        ).to(device)
-    model.load_state_dict(initial_model.state_dict())
+    # Rebuild a fresh copy of the pretrained model.
+    model_type, node_features = _detect_gnn_model_type(initial_model)
+    model = _clone_gnn_model(initial_model, model_type, node_features, device)
 
     criterion = nn.MSELoss()                       # for eval / metric reporting
     train_criterion = _make_train_criterion(asym_alpha, pinball_tau)  # for inner-loop training only
 
-    def create_pyg_data(minimal_sample):
-        node_features = minimal_sample['node_features']
-        cell_name = minimal_sample['cell_name']
-        cell_cache = topology_cache[cell_name]
-
-        if cache_type == 'stage_aware':
-            output_name = minimal_sample['output_name']
-            delay_type = minimal_sample['delay_type']
-            output_topo = cell_cache['output_topologies'][output_name]
-            if 'rise' in delay_type:
-                adjacency_matrix = output_topo['pull_up']['adjacency_matrix']
-            else:
-                adjacency_matrix = output_topo['pull_down']['adjacency_matrix']
-        else:
-            adjacency_matrix = cell_cache['adjacency_matrix']
-
-        edge_index = adjacency_matrix.nonzero().t()
-        return Data(x=node_features, edge_index=edge_index)
-
     K = len(X_samples)
     losses = []
 
-    support_batch_data = [create_pyg_data(sample) for sample in X_samples]
+    support_batch_data = [_make_pyg_data(s, topology_cache, cache_type) for s in X_samples]
     X_batch = Batch.from_data_list(support_batch_data).to(device)
 
-    # For SGD/Adam: use original y values directly
-    # For grad_move methods: y is already normalized by caller
+    # grad/move modes assume caller already normalized y; direct-optim modes normalize locally.
     if use_grad_move:
         y_train = y_tensor
+        y_mean_local = y_std_local = None
     else:
-        # Normalize y for training (simple mean/std normalization)
         y_mean_local = y_tensor.mean()
         y_std_local = y_tensor.std() + 1e-8
         y_train = (y_tensor - y_mean_local) / y_std_local
@@ -703,39 +618,26 @@ def model_functions_with_optim_mode_gnn(initial_model, X_samples, y, true_sample
     initial_loss = train_criterion(model(X_batch), y_train) / K
     losses.append(initial_loss.item())
 
-    # Apply optimization
-    if optim_mode == 'none':
-        pass  # No optimization
-
-    elif optim_mode == 'sgd':
+    # Apply optimization strategy.
+    if optim_mode == 'sgd':
         optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=1e-4)
-        for step in range(num_steps):
+        for _ in range(num_steps):
             loss = train_criterion(model(X_batch), y_train) / K
             losses.append(loss.item())
             model.zero_grad()
             loss.backward()
             optimizer.step()
-
     elif optim_mode == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=inner_adam_lr, weight_decay=1e-4)
-        for step in range(num_steps):
-            loss = train_criterion(model(X_batch), y_train) / K
-            losses.append(loss.item())
-            model.zero_grad()
-            loss.backward()
-            optimizer.step()
+        _run_inner_adam_loop(model, X_batch, y_train, train_criterion, K,
+                             num_steps=num_steps, inner_adam_lr=inner_adam_lr,
+                             record_losses=losses)
+    elif optim_mode == 'selective_adam' and initial_loss > 1e-4:
+        _run_inner_adam_loop(model, X_batch, y_train, train_criterion, K,
+                             num_steps=num_steps, inner_adam_lr=inner_adam_lr,
+                             record_losses=losses)
+    # optim_mode == 'none': no updates.
 
-    elif optim_mode == 'selective_adam':
-        if initial_loss > 1e-4:
-            optimizer = torch.optim.Adam(model.parameters(), lr=inner_adam_lr, weight_decay=1e-4)
-            for step in range(num_steps):
-                loss = train_criterion(model(X_batch), y_train) / K
-                losses.append(loss.item())
-                model.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-    # Evaluate
+    # Evaluate on all total_points.
     predictions = []
     actual_values = []
     total_loss = 0
@@ -745,17 +647,14 @@ def model_functions_with_optim_mode_gnn(initial_model, X_samples, y, true_sample
     model.eval()
     with torch.no_grad():
         for i in range(total_points):
-            sample_data = create_pyg_data(true_samples[i])
+            sample_data = _make_pyg_data(true_samples[i], topology_cache, cache_type)
             sample_batch = Batch.from_data_list([sample_data]).to(device)
-
             raw_pred = model(sample_batch).item()
 
             if use_grad_move:
-                # Denormalize using grad/move
                 pred_value = ((raw_pred - move_tensor) * std_tensor + mean_tensor).item()
                 actual_value = ((true_function_tensor[i] - move_tensor) * std_tensor + mean_tensor).item()
             else:
-                # Denormalize using local mean/std
                 pred_value = (raw_pred * y_std_local + y_mean_local).item()
                 actual_value = true_function[i].item()
 
@@ -769,7 +668,6 @@ def model_functions_with_optim_mode_gnn(initial_model, X_samples, y, true_sample
             total_mape_loss += mape_loss
             total_rmse_loss += squared_error
 
-    # Calculate averages
     avg_total_loss = total_loss / total_points
     avg_total_mape = total_mape_loss / total_points
     avg_total_rmse = math.sqrt(total_rmse_loss / total_points)
