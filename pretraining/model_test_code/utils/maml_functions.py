@@ -7,6 +7,49 @@ import torch.nn.functional as F
 from collections import OrderedDict
 
 
+# ---------------- Shared MAML train/eval helpers ----------------
+
+def _to_device_tensor(x, device):
+    """Cast x to a device tensor (identity for tensors, wrap-then-cast for scalars)."""
+    return x.to(device) if isinstance(x, torch.Tensor) else torch.tensor(x).to(device)
+
+
+def _clone_maml_mlp(initial_model, input_dim, layer_length, device):
+    """
+    Build a fresh MLP with the MAML 4-Linear + 3-ReLU architecture (l1/relu1/l2/relu3/l4/relu2/l3),
+    load `initial_model`'s state dict, move to device.
+    """
+    model = nn.Sequential(OrderedDict([
+        ('l1', nn.Linear(input_dim, layer_length)),
+        ('relu1', nn.ReLU()),
+        ('l2', nn.Linear(layer_length, layer_length)),
+        ('relu3', nn.ReLU()),
+        ('l4', nn.Linear(layer_length, layer_length)),
+        ('relu2', nn.ReLU()),
+        ('l3', nn.Linear(layer_length, 1)),
+    ])).to(device)
+    model.load_state_dict(initial_model.state_dict())
+    return model
+
+
+def _get_input_dim(X):
+    """Support-set feature dim (handles both [K,D] and [K,T,D] tensor shapes)."""
+    return X.shape[2] if len(X.shape) > 2 else X.shape[1]
+
+
+def _run_inner_adam_loop_maml(model, X, y_train, criterion, K, num_steps, lr=3e-4,
+                              record_losses=None):
+    """Inner-loop Adam optimisation on the support set; append per-step loss if record_losses given."""
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-4)
+    for _ in range(num_steps):
+        loss = criterion(model(X), y_train) / K
+        if record_losses is not None:
+            record_losses.append(loss.item())
+        model.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+
 def model_functions_at_training_maml(initial_model, X, y, true_x, true_function,
                                      optim=torch.optim.SGD, lr=0.003, adam_step=0, std=1, mean=10, move=0,
                                      left_bound=5, right_bound=56, total_points=61, mode='extrapolation',
@@ -22,44 +65,27 @@ def model_functions_at_training_maml(initial_model, X, y, true_x, true_function,
     y = y.to(device)
     true_x = true_x.to(device)
     true_function = true_function.to(device)
-    std = std.to(device) if isinstance(std, torch.Tensor) else torch.tensor(std).to(device)
-    mean = mean.to(device) if isinstance(mean, torch.Tensor) else torch.tensor(mean).to(device)
-    move = move.to(device) if isinstance(move, torch.Tensor) else torch.tensor(move).to(device)
-    # Copy MAML model into a new object to preserve MAML weights during training
-    input_dim = X.shape[2] if len(X.shape) > 2 else X.shape[1]
-    model = nn.Sequential(OrderedDict([
-        ('l1', nn.Linear(input_dim, layer_length)),
-        ('relu1', nn.ReLU()),
-        ('l2', nn.Linear(layer_length, layer_length)),
-        ('relu3', nn.ReLU()),
-        ('l4', nn.Linear(layer_length, layer_length)),
-        ('relu2', nn.ReLU()),
-        ('l3', nn.Linear(layer_length, 1))
-    ])).to(device)
-    model.load_state_dict(initial_model.state_dict())
+    std = _to_device_tensor(std, device)
+    mean = _to_device_tensor(mean, device)
+    move = _to_device_tensor(move, device)
+
+    # Rebuild a fresh copy of the pretrained MAML MLP for inner-loop adaptation.
+    model = _clone_maml_mlp(initial_model, _get_input_dim(X), layer_length, device)
     criterion = nn.MSELoss()
-    optimiser = optim(model.parameters(), lr, weight_decay=1e-4)
+    _ = optim(model.parameters(), lr, weight_decay=1e-4)  # signature-compat; adaptation uses Adam below
     adam_condition_triggered = False
 
-    # Train model on a random task
     K = X.shape[0]
-
     losses = []
     outputs = {}
     loss = criterion(model(X), y) / K
 
-    # Adam training if SGD loss is still high
+    # Adam training if initial loss is still high.
     if loss > 1e-4:
         adam_condition_triggered = True
-        optimiser2 = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
-        for step in range(1, adam_step+1):
-            loss = criterion(model(X), y) / K
-            losses.append(loss.item())
-
-            # compute grad and update inner loop weights
-            model.zero_grad()
-            loss.backward()
-            optimiser2.step()
+        _run_inner_adam_loop_maml(model, X, y, criterion, K,
+                                  num_steps=adam_step, lr=3e-4,
+                                  record_losses=losses)
 
     # Calculate losses
     total_loss = 0
@@ -214,39 +240,27 @@ def model_functions_with_optim_mode_maml(initial_model, X, y, true_x, true_funct
     # Use device from input tensor (allows CPU execution when measure_time is enabled)
     device = X.device
 
-    # Determine if using grad/move scaling
+    # grad/move modes assume caller normalized y; direct-optim modes normalize locally.
     use_grad_move = optim_mode in ['none', 'selective_adam', 'full_adam']
 
     y_tensor = y.clone().to(device)
     true_x = true_x.to(device)
     true_function_tensor = true_function.clone().to(device)
-    std_tensor = std.to(device) if isinstance(std, torch.Tensor) else torch.tensor(std).to(device)
-    mean_tensor = mean.to(device) if isinstance(mean, torch.Tensor) else torch.tensor(mean).to(device)
-    move_tensor = move.to(device) if isinstance(move, torch.Tensor) else torch.tensor(move).to(device)
+    std_tensor = _to_device_tensor(std, device)
+    mean_tensor = _to_device_tensor(mean, device)
+    move_tensor = _to_device_tensor(move, device)
 
-    # Copy model
-    input_dim = X.shape[2] if len(X.shape) > 2 else X.shape[1]
-    model = nn.Sequential(OrderedDict([
-        ('l1', nn.Linear(input_dim, layer_length)),
-        ('relu1', nn.ReLU()),
-        ('l2', nn.Linear(layer_length, layer_length)),
-        ('relu3', nn.ReLU()),
-        ('l4', nn.Linear(layer_length, layer_length)),
-        ('relu2', nn.ReLU()),
-        ('l3', nn.Linear(layer_length, 1))
-    ])).to(device)
-    model.load_state_dict(initial_model.state_dict())
+    # Rebuild a fresh copy of the pretrained MAML MLP.
+    model = _clone_maml_mlp(initial_model, _get_input_dim(X), layer_length, device)
 
     criterion = nn.MSELoss()
     K = X.shape[0]
     losses = []
 
-    # For SGD/Adam: use original y values directly
-    # For grad_move methods: y is already normalized by caller
     if use_grad_move:
         y_train = y_tensor
+        y_mean_local = y_std_local = None
     else:
-        # Normalize y for training (simple mean/std normalization)
         y_mean_local = y_tensor.mean()
         y_std_local = y_tensor.std() + 1e-8
         y_train = (y_tensor - y_mean_local) / y_std_local
@@ -254,51 +268,28 @@ def model_functions_with_optim_mode_maml(initial_model, X, y, true_x, true_funct
     initial_loss = criterion(model(X), y_train) / K
     losses.append(initial_loss.item())
 
-    # Track if Adam was triggered (for selective_adam)
+    # Apply optimization strategy.
     adam_triggered = False
-
-    # Apply optimization
-    if optim_mode == 'none':
-        pass  # No optimization
-
-    elif optim_mode == 'sgd':
+    if optim_mode == 'sgd':
         optimizer = torch.optim.SGD(model.parameters(), lr=lr, weight_decay=1e-4)
-        for step in range(num_steps):
+        for _ in range(num_steps):
             loss = criterion(model(X), y_train) / K
             losses.append(loss.item())
             model.zero_grad()
             loss.backward()
             optimizer.step()
-
     elif optim_mode == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
-        for step in range(num_steps):
-            loss = criterion(model(X), y_train) / K
-            losses.append(loss.item())
-            model.zero_grad()
-            loss.backward()
-            optimizer.step()
-
+        _run_inner_adam_loop_maml(model, X, y_train, criterion, K,
+                                  num_steps=num_steps, record_losses=losses)
     elif optim_mode == 'selective_adam':
         adam_triggered = initial_loss > 1e-4
         if adam_triggered:
-            optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
-            for step in range(num_steps):
-                loss = criterion(model(X), y_train) / K
-                losses.append(loss.item())
-                model.zero_grad()
-                loss.backward()
-                optimizer.step()
-
+            _run_inner_adam_loop_maml(model, X, y_train, criterion, K,
+                                      num_steps=num_steps, record_losses=losses)
     elif optim_mode == 'full_adam':
-        # Grad+Move + Adam always (no threshold check)
-        optimizer = torch.optim.Adam(model.parameters(), lr=3e-4, weight_decay=1e-4)
-        for step in range(num_steps):
-            loss = criterion(model(X), y_train) / K
-            losses.append(loss.item())
-            model.zero_grad()
-            loss.backward()
-            optimizer.step()
+        _run_inner_adam_loop_maml(model, X, y_train, criterion, K,
+                                  num_steps=num_steps, record_losses=losses)
+    # optim_mode == 'none': no updates.
 
     # Evaluate
     predictions = []
