@@ -680,7 +680,10 @@ def run_cell_validation(args, cell_name, topology_cache, norm_stats, model, devi
     return results
 
 
-def main():
+# ---------------- main() helpers ----------------
+
+def _build_argparser():
+    """CLI parser for ASAP7 to TSMC Cross-PDK GCN Validation."""
     parser = argparse.ArgumentParser(
         description='ASAP7 to TSMC Cross-PDK GCN Validation',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -811,22 +814,49 @@ Examples:
                         help='Voltage shift to align TSMC voltage to ASAP7 voltage scale. '
                              'TSMC nominal=0.9V, ASAP7 nominal=0.7V, so use -0.2 to shift TSMC voltages. '
                              '(default: 0.0)')
+    return parser
 
-    args = parser.parse_args()
 
-    # Setup device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Using GPU: {args.gpu}")
-    print(f"Device: {device}")
-
-    # Get cell list based on experiment type
+def _resolve_cell_list(args):
+    """Pick the cell list from --cells, experiment default, or intra/agnostic constant."""
     if args.cells is not None:
-        cell_list = args.cells
-    elif args.experiment == 'intra_topology':
-        cell_list = INTRA_TOPOLOGY_CELLS
-    else:
-        cell_list = TOPOLOGY_AGNOSTIC_CELLS
+        return args.cells
+    if args.experiment == 'intra_topology':
+        return INTRA_TOPOLOGY_CELLS
+    return TOPOLOGY_AGNOSTIC_CELLS
 
+
+def _build_asap7_suffixes(args):
+    """
+    Build the collection of ASAP7-side path suffixes (source PDK) that toggle
+    features on/off. Used for the ASAP7 model checkpoint dir and ASAP7 train
+    data path.  Returns dict with keys: topology, voltage, norm, temp, slew.
+    """
+    return {
+        'topology': "_inputport" if args.inputport else "",
+        'voltage': ("_vdd_only" if args.voltage_mode == "vdd_only"
+                    else "_vdd_mos" if args.voltage_mode == "vdd_mos"
+                    else ""),
+        'norm': "_minmax" if args.normalization == "minmax" else "",
+        'temp': "_tempall" if args.temp_mode == "temp_all" else "",
+        'slew': "_relpin" if args.related_pin_only else "",
+    }
+
+
+def _build_checkpoint_suffix(args, topology_suffix):
+    """Detect cache-derived suffixes (_gatectrl, _bidir, _directmos) from the
+    ASAP7 cache basename and append topology_suffix."""
+    suffix = ""
+    if args.asap7_cache_path:
+        cache_basename = os.path.basename(args.asap7_cache_path)
+        for tag in ("_gatectrl", "_bidir", "_directmos"):
+            if tag in cache_basename:
+                suffix += tag
+    return suffix + topology_suffix
+
+
+def _print_config_banner(args, cell_list):
+    """Config banner printed at the top of main()."""
     print(f"\n{'='*80}")
     print(f"ASAP7 to TSMC Cross-PDK GCN Validation")
     print(f"{'='*80}")
@@ -854,61 +884,96 @@ Examples:
     print(f"Cells: {len(cell_list)} cells")
     print(f"{'='*80}")
 
-    # ASAP7 model checkpoint dir suffixes (ASAP7 naming convention)
-    asap7_topology_suffix = "_inputport" if args.inputport else ""
-    asap7_voltage_suffix = "_vdd_only" if args.voltage_mode == "vdd_only" else ("_vdd_mos" if args.voltage_mode == "vdd_mos" else "")
-    asap7_norm_suffix = "_minmax" if args.normalization == "minmax" else ""
-    asap7_temp_suffix = "_tempall" if args.temp_mode == "temp_all" else ""
-    asap7_slew_suffix = "_relpin" if args.related_pin_only else ""
 
-    # Build checkpoint suffix from ASAP7 cache filename if provided
-    checkpoint_suffix = ""
-    if args.asap7_cache_path:
-        cache_basename = os.path.basename(args.asap7_cache_path)
-        if "_gatectrl" in cache_basename:
-            checkpoint_suffix += "_gatectrl"
-        if "_bidir" in cache_basename:
-            checkpoint_suffix += "_bidir"
-        if "_directmos" in cache_basename:
-            checkpoint_suffix += "_directmos"
-    checkpoint_suffix += asap7_topology_suffix
-
-    # Load ASAP7 model
-    print(f"\nLoading ASAP7 {args.model_type.upper()} model...")
-
-    if args.model_path is None:
-        # Add pooling suffix only if not 'mean' (default)
-        pool_suffix = f"_pool{args.pooling}" if args.pooling != 'mean' else ""
-        arch_suffix = f"_conv{args.conv_hidden_dim}x{args.num_conv_layers}_fc{args.fc_hidden_dim}x{args.num_fc_layers}{pool_suffix}"
-
-        sample_suffix = args.sample_suffix
-
-        if args.model_type == 'baseline':
-            model_dir = f"../../../pretrained_models/gnn_baseline_asap7_process_checkpoints{checkpoint_suffix}{asap7_voltage_suffix}{asap7_norm_suffix}{asap7_temp_suffix}{asap7_slew_suffix}{sample_suffix}"
-            model_filename = f"gnn_baseline_asap7_process_{args.data_type}_{args.graph_mode}_iter{args.num_iterations}{arch_suffix}.pth"
-        else:
-            model_dir = f"../../../pretrained_models/gnn_maml_asap7_process_checkpoints{checkpoint_suffix}{asap7_voltage_suffix}{asap7_norm_suffix}{asap7_temp_suffix}{asap7_slew_suffix}{sample_suffix}"
-            model_filename = f"gnn_maml_asap7_process_{args.data_type}_{args.graph_mode}_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}.pth"
-
-        model_path = os.path.join(model_dir, model_filename)
+def _resolve_model_path(args, suffixes, checkpoint_suffix):
+    """
+    Build the default ASAP7 MAML/baseline model checkpoint path from CLI args +
+    suffixes, or return args.model_path when the user supplied a custom path.
+    """
+    if args.model_path is not None:
+        return args.model_path
+    pool_suffix = f"_pool{args.pooling}" if args.pooling != 'mean' else ""
+    arch_suffix = (f"_conv{args.conv_hidden_dim}x{args.num_conv_layers}"
+                   f"_fc{args.fc_hidden_dim}x{args.num_fc_layers}{pool_suffix}")
+    sample_suffix = args.sample_suffix
+    volt = suffixes['voltage']
+    norm = suffixes['norm']
+    temp = suffixes['temp']
+    slew = suffixes['slew']
+    if args.model_type == 'baseline':
+        model_dir = (f"../../../pretrained_models/gnn_baseline_asap7_process_checkpoints"
+                     f"{checkpoint_suffix}{volt}{norm}{temp}{slew}{sample_suffix}")
+        model_filename = (f"gnn_baseline_asap7_process_{args.data_type}_{args.graph_mode}"
+                          f"_iter{args.num_iterations}{arch_suffix}.pth")
     else:
-        model_path = args.model_path
+        model_dir = (f"../../../pretrained_models/gnn_maml_asap7_process_checkpoints"
+                     f"{checkpoint_suffix}{volt}{norm}{temp}{slew}{sample_suffix}")
+        model_filename = (f"gnn_maml_asap7_process_{args.data_type}_{args.graph_mode}"
+                          f"_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}"
+                          f"_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}.pth")
+    return os.path.join(model_dir, model_filename)
 
-    # Anchor relative model_path to this script's directory so external
-    # sweep runners that change cwd don't break the default lookup.
+
+def _load_gnn_model_from_checkpoint(model_path, args, device):
+    """
+    Load an ASAP7 GNN checkpoint from model_path (anchored to script dir if
+    relative), construct a matching model, load state.
+
+    Returns (model, arch_kwargs, checkpoint) on success; (None, None, None)
+    if the checkpoint file is missing.  The raw checkpoint is returned so the
+    caller can pull norm_stats/config from it without reloading.
+    """
     if not os.path.isabs(model_path):
+        # Anchor relative paths to this script's directory so external sweep
+        # runners that change cwd don't break the default lookup.
         model_path = os.path.normpath(os.path.join(
             os.path.dirname(os.path.abspath(__file__)), model_path))
-
     if not os.path.exists(model_path):
         print(f"Model not found: {model_path}")
         print("Please provide --model_path or ensure the ASAP7 model exists")
-        return 1
+        return None, None, None
 
-    # Load checkpoint
     checkpoint = torch.load(model_path, weights_only=False, map_location=device)
+    config = checkpoint.get('config', {})
+    arch_kwargs = dict(
+        conv_hidden_dim=config.get('conv_hidden_dim', args.conv_hidden_dim),
+        num_conv_layers=config.get('num_conv_layers', args.num_conv_layers),
+        fc_hidden_dim=config.get('fc_hidden_dim', args.fc_hidden_dim),
+        num_fc_layers=config.get('num_fc_layers', args.num_fc_layers),
+        node_features=config.get('node_features', 11),  # 11D for both ASAP7 and TSMC Process
+        pooling=config.get('pooling', args.pooling),
+    )
+    print(f"Detected node_features from checkpoint: {arch_kwargs['node_features']}")
+    print(f"Pooling mode: {arch_kwargs['pooling']}")
 
-    # Determine which norm_stats to use
+    model = create_maml_gcn_model(
+        node_features=arch_kwargs['node_features'],
+        pooling=arch_kwargs['pooling'],
+        output_dim=1,
+        dropout=0.0,
+        conv_hidden_dim=arch_kwargs['conv_hidden_dim'],
+        num_conv_layers=arch_kwargs['num_conv_layers'],
+        fc_hidden_dim=arch_kwargs['fc_hidden_dim'],
+        num_fc_layers=arch_kwargs['num_fc_layers'],
+    )
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.eval()
+    model = model.to(device)
+    print(f"Loaded ASAP7 model: {model_path}")
+    print(f"Architecture: conv={arch_kwargs['conv_hidden_dim']}x{arch_kwargs['num_conv_layers']}, "
+          f"fc={arch_kwargs['fc_hidden_dim']}x{arch_kwargs['num_fc_layers']}, "
+          f"pooling={arch_kwargs['pooling']}")
+    return model, arch_kwargs, checkpoint
+
+
+def _resolve_norm_stats(args, checkpoint, asap7_suffixes):
+    """
+    Resolve norm_stats for test-data normalization.
+
+    - --use_target_norm: load from TSMC (target) train data.
+    - default: use ASAP7 (source) norm_stats from checkpoint, falling back to
+      the ASAP7 train data on disk.
+    """
     if args.use_target_norm:
         # Use TSMC (target) norm_stats — derivable from TSMC lib file alone
         tsmc_topology_suffix = "_inputport" if args.inputport else ""
@@ -918,9 +983,9 @@ Examples:
         tsmc_slew_suffix = "_relpin" if args.related_pin_only else ""
         tsmc_train_path = os.path.join(
             args.tsmc_dataset_dir,
-            f"train_{args.data_type}_{args.graph_mode}{tsmc_topology_suffix}{tsmc_voltage_suffix}{tsmc_norm_suffix}{tsmc_temp_suffix}{tsmc_slew_suffix}.pth"
+            f"train_{args.data_type}_{args.graph_mode}{tsmc_topology_suffix}"
+            f"{tsmc_voltage_suffix}{tsmc_norm_suffix}{tsmc_temp_suffix}{tsmc_slew_suffix}.pth"
         )
-
         if os.path.exists(tsmc_train_path):
             print(f"Loading norm_stats from TSMC (target) train data: {tsmc_train_path}")
             tsmc_train_data = torch.load(tsmc_train_path, weights_only=False, map_location='cpu', mmap=True)
@@ -929,96 +994,166 @@ Examples:
                 print("Using TSMC (target) norm_stats for test data normalization")
             else:
                 print("Warning: TSMC train data has no norm_stats")
-        else:
-            print(f"Warning: TSMC train data not found: {tsmc_train_path}")
-            norm_stats = None
-    else:
-        # Use ASAP7 (source) norm_stats from checkpoint
-        norm_stats = checkpoint.get('norm_stats', None)
-        if norm_stats is not None:
-            print("Using norm_stats from ASAP7 model checkpoint (source)")
-        else:
-            # Fallback: load from ASAP7 train data
-            sample_suffix = args.sample_suffix
-            asap7_train_path = os.path.join(
-                args.asap7_dataset_dir,
-                f"train_{args.data_type}_{args.graph_mode}{asap7_topology_suffix}{asap7_slew_suffix}{sample_suffix}.pth"
-            )
-            if os.path.exists(asap7_train_path):
-                print(f"Loading norm_stats from ASAP7 train data: {asap7_train_path}")
-                asap7_train_data = torch.load(asap7_train_path, weights_only=False, map_location='cpu', mmap=True)
-                norm_stats = asap7_train_data.get('norm_stats', None)
-            else:
-                print(f"Warning: Could not load norm_stats from checkpoint or ASAP7 train data")
+            return norm_stats
+        print(f"Warning: TSMC train data not found: {tsmc_train_path}")
+        return None
 
-    # Get architecture params from checkpoint
-    config = checkpoint.get('config', {})
-    conv_hidden_dim = config.get('conv_hidden_dim', args.conv_hidden_dim)
-    num_conv_layers = config.get('num_conv_layers', args.num_conv_layers)
-    fc_hidden_dim = config.get('fc_hidden_dim', args.fc_hidden_dim)
-    num_fc_layers = config.get('num_fc_layers', args.num_fc_layers)
-    node_features = config.get('node_features', 11)  # 11D for both ASAP7 and TSMC Process
+    # Use ASAP7 (source) norm_stats from checkpoint
+    norm_stats = checkpoint.get('norm_stats', None)
+    if norm_stats is not None:
+        print("Using norm_stats from ASAP7 model checkpoint (source)")
+        return norm_stats
 
-    print(f"Detected node_features from checkpoint: {node_features}")
-
-    # Get pooling from checkpoint config or use argument
-    pooling_mode = config.get('pooling', args.pooling)
-    print(f"Pooling mode: {pooling_mode}")
-
-    # Create model
-    model = create_maml_gcn_model(
-        node_features=node_features,
-        pooling=pooling_mode,
-        output_dim=1,
-        dropout=0.0,
-        conv_hidden_dim=conv_hidden_dim,
-        num_conv_layers=num_conv_layers,
-        fc_hidden_dim=fc_hidden_dim,
-        num_fc_layers=num_fc_layers
+    # Fallback: load from ASAP7 train data
+    sample_suffix = args.sample_suffix
+    asap7_train_path = os.path.join(
+        args.asap7_dataset_dir,
+        f"train_{args.data_type}_{args.graph_mode}"
+        f"{asap7_suffixes['topology']}{asap7_suffixes['slew']}{sample_suffix}.pth"
     )
-    model.load_state_dict(checkpoint['model_state_dict'])
-    model.eval()
-    model = model.to(device)
+    if os.path.exists(asap7_train_path):
+        print(f"Loading norm_stats from ASAP7 train data: {asap7_train_path}")
+        asap7_train_data = torch.load(asap7_train_path, weights_only=False, map_location='cpu', mmap=True)
+        return asap7_train_data.get('norm_stats', None)
+    print(f"Warning: Could not load norm_stats from checkpoint or ASAP7 train data")
+    return None
 
-    print(f"Loaded ASAP7 model: {model_path}")
-    print(f"Architecture: conv={conv_hidden_dim}x{num_conv_layers}, fc={fc_hidden_dim}x{num_fc_layers}, pooling={pooling_mode}")
 
-    # Load TSMC topology cache (for test data adjacency)
+def _load_topology_cache(args):
+    """
+    Resolve TSMC topology cache path (prefer CLI, else default TSMC path with
+    _bidir suffix derived from ASAP7 cache), remap /mnt/home/ → /home/, load
+    with mmap.  Returns None if not found.
+    """
     tsmc_cache_path = args.tsmc_cache_path
     if tsmc_cache_path is None:
-        # Default TSMC topology cache path
         bidir_suffix = "_bidir" if args.asap7_cache_path and "_bidir" in args.asap7_cache_path else ""
-        tsmc_cache_path = f"/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/gnn/topology_cache/stage_aware_topology_cache_tsmc{bidir_suffix}.pth"
-
+        tsmc_cache_path = (
+            f"/home/tkdgn2907/Deepsets_test/MAML/Projects/data_processing/"
+            f"gnn/topology_cache/stage_aware_topology_cache_tsmc{bidir_suffix}.pth"
+        )
     if tsmc_cache_path.startswith('/mnt/home/'):
         tsmc_cache_path = tsmc_cache_path.replace('/mnt/home/', '/home/')
-
     if not os.path.exists(tsmc_cache_path):
         print(f"TSMC topology cache not found: {tsmc_cache_path}")
-        return 1
-
+        return None
     print(f"\nLoading TSMC topology cache: {tsmc_cache_path}", flush=True)
     topology_cache = torch.load(tsmc_cache_path, weights_only=False, map_location='cpu', mmap=True)
     print(f"Loaded TSMC topology cache for {len(topology_cache)} cells", flush=True)
+    return topology_cache
 
-    # Print PDK scale factor info
-    if args.pdk_scale_factor != 1.0 or args.voltage_shift != 0.0:
-        print(f"\nCross-PDK Unit Conversion:")
-        if args.pdk_scale_factor != 1.0:
-            print(f"  PDK scale factor: {args.pdk_scale_factor}")
-            print(f"    - TSMC input_slew/output_load scaled by {args.pdk_scale_factor}")
-            print(f"    - TSMC output values scaled by {args.pdk_scale_factor}")
-            print(f"    - (TSMC: ns/pf -> ASAP7: ps/ff)")
-        if args.voltage_shift != 0.0:
-            print(f"  Voltage shift: {args.voltage_shift}V")
-            print(f"    - TSMC voltage shifted by {args.voltage_shift}V")
-            print(f"    - (TSMC nominal: 0.9V -> ASAP7 nominal: 0.7V)")
 
-    # Process each cell
+def _print_pdk_scale_info(args):
+    """Print cross-PDK unit conversion banner (only if any scaling is active)."""
+    if args.pdk_scale_factor == 1.0 and args.voltage_shift == 0.0:
+        return
+    print(f"\nCross-PDK Unit Conversion:")
+    if args.pdk_scale_factor != 1.0:
+        print(f"  PDK scale factor: {args.pdk_scale_factor}")
+        print(f"    - TSMC input_slew/output_load scaled by {args.pdk_scale_factor}")
+        print(f"    - TSMC output values scaled by {args.pdk_scale_factor}")
+        print(f"    - (TSMC: ns/pf -> ASAP7: ps/ff)")
+    if args.voltage_shift != 0.0:
+        print(f"  Voltage shift: {args.voltage_shift}V")
+        print(f"    - TSMC voltage shifted by {args.voltage_shift}V")
+        print(f"    - (TSMC nominal: 0.9V -> ASAP7 nominal: 0.7V)")
+
+
+def _print_summary(args, cell_list, all_results, successful, failed):
+    """Per-cell summary table + averages + region-specific metrics."""
+    print(f"\n{'='*80}")
+    print(f"SUMMARY: ASAP7 to TSMC - {args.experiment}")
+    print(f"{'='*80}")
+    print(f"Successful: {successful}/{len(cell_list)}, Failed: {failed}/{len(cell_list)}")
+    print()
+    if not all_results:
+        return
+    print(f"{'Cell':<25} {'Tasks':<8} {'NRMSE%':<10} {'MAPE%':<10} {'RMSE(ns)':<12}")
+    print("-" * 70)
+    for result in all_results:
+        print(f"{result['cell_name']:<25} {result['num_valid_tasks']:<8} "
+              f"{result['nrmse_total']:<10.2f} {result['mape_total']:<10.2f} "
+              f"{result['rmse_total']*1e9:<12.4f}")
+    avg_nrmse = sum(r['nrmse_total'] for r in all_results) / len(all_results)
+    avg_mape = sum(r['mape_total'] for r in all_results) / len(all_results)
+    avg_rmse = sum(r['rmse_total'] for r in all_results) / len(all_results)
+    total_tasks = sum(r['num_valid_tasks'] for r in all_results)
+    print("-" * 70)
+    print(f"{'AVERAGE':<25} {total_tasks:<8} {avg_nrmse:<10.2f} {avg_mape:<10.2f} {avg_rmse*1e9:<12.4f}")
+
+    # Region-specific metrics (Left/Right/Inter)
+    print(f"\nRegion-specific metrics (Average across all cells):")
+    print(f"  NRMSE - Left: {sum(r['nrmse_left'] for r in all_results)/len(all_results):.2f}%, "
+          f"Right: {sum(r['nrmse_right'] for r in all_results)/len(all_results):.2f}%, "
+          f"Inter: {sum(r['nrmse_inter'] for r in all_results)/len(all_results):.2f}%")
+    print(f"  MAPE  - Left: {sum(r['mape_left'] for r in all_results)/len(all_results):.2f}%, "
+          f"Right: {sum(r['mape_right'] for r in all_results)/len(all_results):.2f}%, "
+          f"Inter: {sum(r['mape_inter'] for r in all_results)/len(all_results):.2f}%")
+    print(f"  RMSE  - Left: {sum(r['rmse_left'] for r in all_results)/len(all_results)*1e9:.4f}ns, "
+          f"Right: {sum(r['rmse_right'] for r in all_results)/len(all_results)*1e9:.4f}ns, "
+          f"Inter: {sum(r['rmse_inter'] for r in all_results)/len(all_results)*1e9:.4f}ns")
+
+
+def _save_results_npy(args, all_results, arch_kwargs):
+    """Save per-cell prediction/actual .npy files with sweep-encoded filenames."""
+    pooling_mode = arch_kwargs['pooling']
+    pool_suffix = f"_pool{pooling_mode}" if pooling_mode != 'mean' else ""
+    arch_suffix = (f"_conv{arch_kwargs['conv_hidden_dim']}x{arch_kwargs['num_conv_layers']}"
+                   f"_fc{arch_kwargs['fc_hidden_dim']}x{arch_kwargs['num_fc_layers']}{pool_suffix}")
+    filter_suffix = "_filtered" if args.filter_continuous else ""
+
+    output_dir_name = (
+        "data_result_npy_directory_final" if args.output_dir == "final"
+        else "data_result_npy_directory"
+    )
+    os.makedirs(output_dir_name, exist_ok=True)
+
+    for result in all_results:
+        cell_name = result['cell_name']
+        base_head = (f"{args.output_prefix}_{args.experiment}_{cell_name}"
+                     f"_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}")
+        if args.model_type == 'baseline':
+            base_name = f"{base_head}_iter{args.num_iterations}{arch_suffix}{filter_suffix}"
+        else:
+            base_name = (f"{base_head}_innerdiv{args.innerdiv}"
+                         f"_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}"
+                         f"_inner{args.inner_steps}{arch_suffix}{filter_suffix}")
+        np.save(f"{output_dir_name}/{base_name}_pred.npy", result['predictions'])
+        np.save(f"{output_dir_name}/{base_name}_act.npy", result['actuals'])
+
+    print(f"\nSaved results to {output_dir_name}/")
+
+
+def main():
+    args = _build_argparser().parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using GPU: {args.gpu}")
+    print(f"Device: {device}")
+
+    cell_list = _resolve_cell_list(args)
+    _print_config_banner(args, cell_list)
+
+    asap7_suffixes = _build_asap7_suffixes(args)
+    checkpoint_suffix = _build_checkpoint_suffix(args, asap7_suffixes['topology'])
+
+    print(f"\nLoading ASAP7 {args.model_type.upper()} model...")
+    model_path = _resolve_model_path(args, asap7_suffixes, checkpoint_suffix)
+    model, arch_kwargs, checkpoint = _load_gnn_model_from_checkpoint(model_path, args, device)
+    if model is None:
+        return 1
+
+    norm_stats = _resolve_norm_stats(args, checkpoint, asap7_suffixes)
+
+    topology_cache = _load_topology_cache(args)
+    if topology_cache is None:
+        return 1
+
+    _print_pdk_scale_info(args)
+
+    # Per-cell validation (cross-PDK: scaling applied inside run_cell_validation).
     all_results = []
-    successful = 0
-    failed = 0
-
+    successful = failed = 0
     for cell_name in cell_list:
         result = run_cell_validation(args, cell_name, topology_cache, norm_stats, model, device,
                                      pdk_scale_factor=args.pdk_scale_factor,
@@ -1029,69 +1164,10 @@ Examples:
         else:
             failed += 1
 
-    # Print summary
-    print(f"\n{'='*80}")
-    print(f"SUMMARY: ASAP7 to TSMC - {args.experiment}")
-    print(f"{'='*80}")
-    print(f"Successful: {successful}/{len(cell_list)}, Failed: {failed}/{len(cell_list)}")
-    print()
+    _print_summary(args, cell_list, all_results, successful, failed)
 
-    if all_results:
-        print(f"{'Cell':<25} {'Tasks':<8} {'NRMSE%':<10} {'MAPE%':<10} {'RMSE(ns)':<12}")
-        print("-" * 70)
-
-        for result in all_results:
-            print(f"{result['cell_name']:<25} {result['num_valid_tasks']:<8} "
-                  f"{result['nrmse_total']:<10.2f} {result['mape_total']:<10.2f} "
-                  f"{result['rmse_total']*1e9:<12.4f}")
-
-        # Calculate averages
-        avg_nrmse = sum(r['nrmse_total'] for r in all_results) / len(all_results)
-        avg_mape = sum(r['mape_total'] for r in all_results) / len(all_results)
-        avg_rmse = sum(r['rmse_total'] for r in all_results) / len(all_results)
-        total_tasks = sum(r['num_valid_tasks'] for r in all_results)
-
-        print("-" * 70)
-        print(f"{'AVERAGE':<25} {total_tasks:<8} {avg_nrmse:<10.2f} {avg_mape:<10.2f} {avg_rmse*1e9:<12.4f}")
-
-        # Print region-specific metrics
-        print(f"\nRegion-specific metrics (Average across all cells):")
-        print(f"  NRMSE - Left: {sum(r['nrmse_left'] for r in all_results)/len(all_results):.2f}%, "
-              f"Right: {sum(r['nrmse_right'] for r in all_results)/len(all_results):.2f}%, "
-              f"Inter: {sum(r['nrmse_inter'] for r in all_results)/len(all_results):.2f}%")
-        print(f"  MAPE  - Left: {sum(r['mape_left'] for r in all_results)/len(all_results):.2f}%, "
-              f"Right: {sum(r['mape_right'] for r in all_results)/len(all_results):.2f}%, "
-              f"Inter: {sum(r['mape_inter'] for r in all_results)/len(all_results):.2f}%")
-        print(f"  RMSE  - Left: {sum(r['rmse_left'] for r in all_results)/len(all_results)*1e9:.4f}ns, "
-              f"Right: {sum(r['rmse_right'] for r in all_results)/len(all_results)*1e9:.4f}ns, "
-              f"Inter: {sum(r['rmse_inter'] for r in all_results)/len(all_results)*1e9:.4f}ns")
-
-    # Save results if requested
     if args.save_results and all_results:
-        pool_suffix = f"_pool{pooling_mode}" if pooling_mode != 'mean' else ""
-        arch_suffix = f"_conv{conv_hidden_dim}x{num_conv_layers}_fc{fc_hidden_dim}x{num_fc_layers}{pool_suffix}"
-        filter_suffix = "_filtered" if args.filter_continuous else ""
-
-        # Determine output directory based on output_dir argument
-        output_dir_name = "data_result_npy_directory_final" if args.output_dir == "final" else "data_result_npy_directory"
-
-        for result in all_results:
-            cell_name = result['cell_name']
-
-            if args.model_type == 'baseline':
-                base_name = f"{args.output_prefix}_{args.experiment}_{cell_name}_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}_iter{args.num_iterations}{arch_suffix}{filter_suffix}"
-            else:
-                base_name = f"{args.output_prefix}_{args.experiment}_{cell_name}_{args.data_type}_{args.graph_mode}_{args.mode}_{args.model_type}_innerdiv{args.innerdiv}_meta{args.tasks_per_meta_batch}_iter{args.num_iterations}_inner{args.inner_steps}{arch_suffix}{filter_suffix}"
-
-            pred_filename = f"{output_dir_name}/{base_name}_pred.npy"
-            act_filename = f"{output_dir_name}/{base_name}_act.npy"
-
-            os.makedirs(output_dir_name, exist_ok=True)
-
-            np.save(pred_filename, result['predictions'])
-            np.save(act_filename, result['actuals'])
-
-        print(f"\nSaved results to {output_dir_name}/")
+        _save_results_npy(args, all_results, arch_kwargs)
 
     return 0 if failed == 0 else 1
 
