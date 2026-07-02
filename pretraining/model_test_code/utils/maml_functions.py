@@ -8,7 +8,7 @@ from collections import OrderedDict
 
 
 def model_functions_at_training_maml(initial_model, X, y, true_x, true_function,
-                                     optim=torch.optim.SGD, lr=0.003, adam_step=0, std=1, mean=10,
+                                     optim=torch.optim.SGD, lr=0.003, adam_step=0, std=1, mean=10, move=0,
                                      left_bound=5, right_bound=56, total_points=61, mode='extrapolation',
                                      layer_length=40):
     """
@@ -24,7 +24,7 @@ def model_functions_at_training_maml(initial_model, X, y, true_x, true_function,
     true_function = true_function.to(device)
     std = std.to(device) if isinstance(std, torch.Tensor) else torch.tensor(std).to(device)
     mean = mean.to(device) if isinstance(mean, torch.Tensor) else torch.tensor(mean).to(device)
-
+    move = move.to(device) if isinstance(move, torch.Tensor) else torch.tensor(move).to(device)
     # Copy MAML model into a new object to preserve MAML weights during training
     input_dim = X.shape[2] if len(X.shape) > 2 else X.shape[1]
     model = nn.Sequential(OrderedDict([
@@ -71,12 +71,12 @@ def model_functions_at_training_maml(initial_model, X, y, true_x, true_function,
     actual_values = []
 
     for i in range(total_points):
-        pred_value = ((model(true_x[i]))*std+mean).item()
-        actual_value = ((true_function[i])*std+mean).item()
+        pred_value = ((model(true_x[i])-move)*std+mean).item()
+        actual_value = ((true_function[i]-move)*std+mean).item()
         predictions.append(pred_value)
         actual_values.append(actual_value)
 
-        loss = criterion((model(true_x[i]))*std+mean, (true_function[i])*std+mean)
+        loss = criterion((model(true_x[i])-move)*std+mean, (true_function[i]-move)*std+mean)
 
         # Calculate MAPE (Mean Absolute Percentage Error)
         if abs(actual_value) > 1e-8:  # Avoid division by zero
@@ -171,6 +171,7 @@ def evaluate_model_performance_maml(initial_model, model_name, X, y, true_x, tru
                 adam_step=40,
                 std=y_std1,
                 mean=y_mean1,
+                move = move,
                 left_bound=left_bound,
                 right_bound=right_bound,
                 total_points=total_points,
